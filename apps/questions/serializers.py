@@ -1,0 +1,222 @@
+from rest_framework import serializers
+from django.contrib.auth import get_user_model
+from .models import Question, QuestionOption, QuestionTag, QuestionTagging
+from apps.subjects.serializers import ChapterSerializer
+
+User = get_user_model()
+
+
+class QuestionOptionSerializer(serializers.ModelSerializer):
+    """
+    Serializer for question options.
+    """
+
+    class Meta:
+        model = QuestionOption
+        fields = ["id", "option_text", "option_image", "option_order", "is_correct"]
+        read_only_fields = ["id"]
+
+
+class QuestionTagSerializer(serializers.ModelSerializer):
+    """
+    Serializer for question tags.
+    """
+
+    class Meta:
+        model = QuestionTag
+        fields = ["id", "name", "description", "color"]
+        read_only_fields = ["id"]
+
+
+class QuestionListSerializer(serializers.ModelSerializer):
+    """
+    Serializer for question list (without correct answers).
+    """
+
+    chapter_name = serializers.CharField(source="chapter.name", read_only=True)
+    subject_name = serializers.CharField(source="chapter.subject.name", read_only=True)
+    created_by_name = serializers.CharField(
+        source="created_by.full_name", read_only=True
+    )
+    options = QuestionOptionSerializer(many=True, read_only=True)
+    tags = QuestionTagSerializer(many=True, read_only=True)
+    success_rate = serializers.ReadOnlyField()
+    options_count = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Question
+        fields = [
+            "id",
+            "chapter",
+            "chapter_name",
+            "subject_name",
+            "question_text",
+            "question_image",
+            "difficulty",
+            "marks",
+            "negative_marks",
+            "allow_negative_marking",
+            "is_active",
+            "options",
+            "tags",
+            "success_rate",
+            "options_count",
+            "created_by_name",
+            "created_at",
+        ]
+        read_only_fields = ["id", "success_rate", "options_count", "created_at"]
+
+
+class QuestionDetailSerializer(QuestionListSerializer):
+    """
+    Detailed serializer for questions (includes explanations for teachers).
+    """
+
+    chapter_detail = ChapterSerializer(source="chapter", read_only=True)
+
+    class Meta(QuestionListSerializer.Meta):
+        fields = QuestionListSerializer.Meta.fields + [
+            "explanation",
+            "chapter_detail",
+            "times_used",
+            "total_attempts",
+        ]
+
+
+class QuestionCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating questions.
+    """
+
+    options = QuestionOptionSerializer(many=True)
+    tags = serializers.ListField(
+        child=serializers.CharField(max_length=50), required=False, allow_empty=True
+    )
+
+    class Meta:
+        model = Question
+        fields = [
+            "chapter",
+            "question_text",
+            "question_image",
+            "explanation",
+            "difficulty",
+            "marks",
+            "negative_marks",
+            "allow_negative_marking",
+            "options",
+            "tags",
+        ]
+
+    def validate_options(self, value):
+        """Validate question options."""
+        if len(value) < 2:
+            raise serializers.ValidationError("Question must have at least 2 options.")
+        if len(value) > 6:
+            raise serializers.ValidationError(
+                "Question cannot have more than 6 options."
+            )
+
+        correct_options = [opt for opt in value if opt.get("is_correct")]
+        if len(correct_options) != 1:
+            raise serializers.ValidationError(
+                "Question must have exactly one correct option."
+            )
+
+        # Validate option orders
+        option_orders = [opt.get("option_order") for opt in value]
+        if len(set(option_orders)) != len(option_orders):
+            raise serializers.ValidationError("Option orders must be unique.")
+
+        return value
+
+    def create(self, validated_data):
+        """Create question with options and tags."""
+        options_data = validated_data.pop("options")
+        tags_data = validated_data.pop("tags", [])
+
+        # Set created_by from request user
+        validated_data["created_by"] = self.context["request"].user
+
+        # Create question
+        question = Question.objects.create(**validated_data)
+
+        # Create options
+        for option_data in options_data:
+            QuestionOption.objects.create(question=question, **option_data)
+
+        # Handle tags
+        for tag_name in tags_data:
+            tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
+            QuestionTagging.objects.create(question=question, tag=tag)
+
+        return question
+
+    def update(self, instance, validated_data):
+        """Update question with options and tags."""
+        options_data = validated_data.pop("options", None)
+        tags_data = validated_data.pop("tags", None)
+
+        # Update question fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update options if provided
+        if options_data is not None:
+            # Delete existing options
+            instance.options.all().delete()
+
+            # Create new options
+            for option_data in options_data:
+                QuestionOption.objects.create(question=instance, **option_data)
+
+        # Update tags if provided
+        if tags_data is not None:
+            # Clear existing tags
+            QuestionTagging.objects.filter(question=instance).delete()
+
+            # Add new tags
+            for tag_name in tags_data:
+                tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
+                QuestionTagging.objects.create(question=instance, tag=tag)
+
+        return instance
+
+
+class QuestionBulkCreateSerializer(serializers.Serializer):
+    """
+    Serializer for bulk question creation.
+    """
+
+    chapter = serializers.UUIDField()
+    questions = QuestionCreateSerializer(many=True)
+
+    def validate_chapter(self, value):
+        """Validate chapter exists."""
+        from apps.subjects.models import Chapter
+
+        try:
+            return Chapter.objects.get(id=value, is_active=True)
+        except Chapter.DoesNotExist:
+            raise serializers.ValidationError("Invalid chapter.")
+
+    def create(self, validated_data):
+        """Bulk create questions."""
+        chapter = validated_data["chapter"]
+        questions_data = validated_data["questions"]
+
+        created_questions = []
+        for question_data in questions_data:
+            question_data["chapter"] = chapter
+            serializer = QuestionCreateSerializer(
+                data=question_data, context=self.context
+            )
+            if serializer.is_valid():
+                question = serializer.save()
+                created_questions.append(question)
+            else:
+                # You might want to handle individual question errors differently
+                pass
+
+        return created_questions

@@ -106,7 +106,7 @@ class QuestionAdmin(admin.ModelAdmin):
         ),
     )
 
-    filter_horizontal = ["tags"]
+    # Note: tags uses through model, so we use inline instead of filter_horizontal
 
     def get_queryset(self, request):
         """Optimize queryset with prefetch_related"""

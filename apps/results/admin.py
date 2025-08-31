@@ -32,7 +32,6 @@ class ExamResultAdmin(admin.ModelAdmin):
         "is_passed",
         "exam",
         "grade",
-        "exam__subject",
         "percentage_score",
         "created_at",
     ]
@@ -567,7 +566,6 @@ class ExamAnalyticsAdmin(admin.ModelAdmin):
         "last_calculated",
     ]
     list_filter = [
-        "exam__subject",
         "pass_rate",
         "completion_rate",
         "score_trend",
@@ -762,7 +760,6 @@ class QuestionAnalyticsAdmin(admin.ModelAdmin):
     ]
     list_filter = [
         "question__difficulty",
-        "question__chapter__subject",
         "needs_review",
         "quality_score",
         "success_rate",

@@ -46,7 +46,6 @@ LOCAL_APPS = [
     "apps.results",
     "apps.leaderboards",
     "apps.notifications",
-    "apps.analytics",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -97,11 +96,8 @@ DATABASES = {
         "NAME": config("DB_NAME", default="mcq_platform"),
         "USER": config("DB_USER", default="mcq_user"),
         "PASSWORD": config("DB_PASSWORD", default="mcq_password"),
-        "HOST": config("DB_HOST", default="localhost"),
+        "HOST": config("DB_HOST", default="db"),  
         "PORT": config("DB_PORT", default="5432"),
-        "OPTIONS": {
-            "MAX_CONNS": 20,
-        },
     }
 }
 

@@ -32,7 +32,6 @@ urlpatterns = [
     path("api/results/", include("apps.results.urls")),
     path("api/leaderboards/", include("apps.leaderboards.urls")),
     path("api/notifications/", include("apps.notifications.urls")),
-    path("api/analytics/", include("apps.analytics.urls")),
     # Router URLs
     path("api/", include(router.urls)),
 ]

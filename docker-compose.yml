@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15
@@ -45,10 +43,14 @@ services:
       - redis
       - rabbitmq
     environment:
-      - DEBUG=False
-      - DATABASE_URL=postgres://mcq_user:mcq_password@db:5432/mcq_platform
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=amqp://mcq_user:mcq_password@rabbitmq:5672//
+    - DEBUG=False
+    - DJANGO_SETTINGS_MODULE=mcq_platform.settings.base
+    - DB_HOST=db
+    - DB_NAME=mcq_platform
+    - DB_USER=mcq_user
+    - DB_PASSWORD=mcq_password
+    - REDIS_URL=redis://redis:6379/0
+    - CELERY_BROKER_URL=amqp://mcq_user:mcq_password@rabbitmq:5672//
 
   celery:
     build: .

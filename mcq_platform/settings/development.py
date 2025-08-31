@@ -16,8 +16,6 @@ INTERNAL_IPS = [
     "localhost",
 ]
 
-# Development database
-DATABASES["default"]["OPTIONS"]["MAX_CONNS"] = 5
 
 # Email backend for development
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"

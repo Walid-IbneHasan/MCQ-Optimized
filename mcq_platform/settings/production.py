@@ -14,12 +14,7 @@ SECURE_HSTS_PRELOAD = True
 
 # Database optimizations
 DATABASES["default"]["CONN_MAX_AGE"] = 300
-DATABASES["default"]["OPTIONS"] = {
-    "MAX_CONNS": 20,
-    "OPTIONS": {
-        "isolation_level": psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED,
-    },
-}
+
 
 # Logging for production
 LOGGING = {

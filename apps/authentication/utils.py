@@ -54,7 +54,7 @@ def get_client_ip(request):
 
 def create_login_attempt(phone_number, ip_address, user_agent, is_successful, failure_reason=''):
     """Create login attempt record."""
-    from authentication.models import LoginAttempt
+    from apps.authentication.models import LoginAttempt
     
     LoginAttempt.objects.create(
         phone_number=phone_number,
@@ -73,8 +73,8 @@ def check_rate_limit(phone_number, limit_type='login', max_attempts=5, window_mi
     if attempts >= max_attempts:
         return False
     
-    # Increment attempts
-    redis_client.setex(cache_key, window_minutes * 60, attempts + 1)
+    # Increment attempts with expiration
+    redis_client.set(cache_key, str(attempts + 1), timeout=window_minutes * 60)
     return True
 
 def clear_rate_limit(phone_number, limit_type='login'):

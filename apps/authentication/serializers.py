@@ -36,7 +36,6 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     """
     Serializer for user registration.
     """
-
     password = serializers.CharField(write_only=True, validators=[validate_password])
     confirm_password = serializers.CharField(write_only=True)
 
@@ -59,16 +58,6 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             )
         return value
 
-    @property
-    def full_name(self):
-        """Return full name."""
-        return f"{self.first_name} {self.last_name}".strip() or self.phone_number
-
-    @property
-    def is_admin(self):
-        """Check if user is admin."""
-        return self.role == "admin" or self.is_superuser
-
     def validate(self, attrs):
         """Validate password confirmation."""
         if attrs["password"] != attrs["confirm_password"]:
@@ -76,31 +65,16 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        """Create user and send OTP."""
+        """Create user without sending OTP."""
         validated_data.pop("confirm_password")
         phone_number = validated_data["phone_number"]
 
-        # Check if user already exists
         if User.objects.filter(phone_number=phone_number).exists():
             raise serializers.ValidationError(
                 "User with this phone number already exists."
             )
 
-        # Create inactive user
         user = User.objects.create_user(**validated_data)
-
-        # Generate and send OTP
-        otp_code = generate_otp()
-        otp_verification = OTPVerification.objects.create(
-            phone_number=phone_number,
-            otp_code=otp_code,
-            otp_type="registration",
-            expires_at=timezone.now() + timedelta(minutes=5),
-        )
-
-        # Send OTP via SMS
-        send_otp_sms(phone_number, otp_code, "registration")
-
         return user
 
 @extend_schema_serializer(

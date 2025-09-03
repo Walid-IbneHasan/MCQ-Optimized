@@ -1,4 +1,4 @@
-from mcq_platform.celery import shared_task
+from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import F, Q, Avg
@@ -149,9 +149,7 @@ def update_exam_statistics(exam_id):
 
         if results.exists():
             total_attempts = results.count()
-            avg_score = (
-                results.aggregate(avg=Avg("score_percentage"))["avg"] or 0
-            )
+            avg_score = results.aggregate(avg=Avg("score_percentage"))["avg"] or 0
 
             exam.total_attempts = total_attempts
             exam.average_score = avg_score

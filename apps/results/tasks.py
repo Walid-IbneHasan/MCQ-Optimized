@@ -1,4 +1,4 @@
-from mcq_platform.celery import shared_task
+from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Avg, Count, StdDev, Q, F, Sum

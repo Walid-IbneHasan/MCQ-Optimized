@@ -1,4 +1,4 @@
-from mcq_platform.celery import shared_task
+from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth import get_user_model

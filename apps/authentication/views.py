@@ -289,12 +289,16 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom login view with additional security features.
     """
 
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
     @method_decorator(ratelimit(key="ip", rate="5/m", method="POST"))
-    @log_api_call
     def post(self, request, *args, **kwargs):
         phone_number = request.data.get("phone_number", "")
         ip_address = get_client_ip(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
+
+        logger.info(f"Login attempt for phone: {phone_number} from IP: {ip_address}")
 
         # Check rate limit
         if not check_rate_limit(

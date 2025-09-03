@@ -555,6 +555,6 @@ class BulkNotificationAdmin(admin.ModelAdmin):
 
 
 # Custom admin site configuration
-admin.site.site_header = "Notifications Administration"
-admin.site.site_title = "Notifications Admin"
-admin.site.index_title = "Notification System Management"
+admin.site.site_header = "MCQ Administration"
+admin.site.site_title = "MCQ Admin"
+admin.site.index_title = "MCQ Management"

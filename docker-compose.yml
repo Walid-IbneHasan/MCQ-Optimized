@@ -43,7 +43,7 @@ services:
       - redis
       - rabbitmq
     environment:
-    - DEBUG=False
+    - DEBUG=True
     - DJANGO_SETTINGS_MODULE=mcq_platform.settings.base
     - DB_HOST=db
     - DB_NAME=mcq_platform

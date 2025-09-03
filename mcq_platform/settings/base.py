@@ -13,7 +13,7 @@ SECRET_KEY = config(
 DEBUG = config("DEBUG", default=False, cast=bool)
 ALLOWED_HOSTS = config(
     "ALLOWED_HOSTS",
-    default="localhost,127.0.0.1",
+    default="localhost,127.0.0.1,127.0.0.1:8000",
     cast=lambda v: [s.strip() for s in v.split(",")],
 )
 
@@ -96,7 +96,7 @@ DATABASES = {
         "NAME": config("DB_NAME", default="mcq_platform"),
         "USER": config("DB_USER", default="mcq_user"),
         "PASSWORD": config("DB_PASSWORD", default="mcq_password"),
-        "HOST": config("DB_HOST", default="db"),  
+        "HOST": config("DB_HOST", default="db"),
         "PORT": config("DB_PORT", default="5432"),
     }
 }
@@ -280,6 +280,8 @@ CSRF_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
 
+CSRF_TRUSTED_ORIGINS = ["http://localhost", "http://127.0.0.1"]
+
 # Email Settings
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = config("EMAIL_HOST", default="smtp.gmail.com")
@@ -291,9 +293,9 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@mcqplatform.c
 
 # SMS Settings
 SMS_API_URL = "https://api.mimsms.com/api/SmsSending/SMS"
-SMS_API_KEY = config("SMS_API_KEY", default="V0VDKBSI84ECAWL")
-SMS_USERNAME = config("SMS_USERNAME", default="rajuhosseng@gmail.com")
-SMS_SENDER_ID = config("SMS_SENDER_ID", default="8809601010352")
+SMS_API_KEY = config("SMS_API_KEY")
+SMS_USERNAME = config("SMS_USERNAME")
+SMS_SENDER_ID = config("SMS_SENDER_ID")
 
 # OTP Settings
 OTP_EXPIRY_TIME = 300  # 5 minutes

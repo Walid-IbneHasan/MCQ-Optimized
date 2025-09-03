@@ -45,7 +45,6 @@ import logging
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
-
 @extend_schema_view(
     post=extend_schema(
         summary="Register new user",
@@ -109,109 +108,79 @@ User = get_user_model()
                     )
                 ],
             ),
+            500: OpenApiResponse(
+                description="Internal server error - SMS sending failed",
+                examples=[
+                    OpenApiExample(
+                        "SMS Error",
+                        value={
+                            "success": False,
+                            "error": "Failed to send OTP: 400 Bad Request",
+                        },
+                    )
+                ],
+            ),
         },
         tags=["Authentication"],
     )
 )
 class UserRegistrationView(APIView):
-    """
-    User registration endpoint.
-    """
-
     permission_classes = [permissions.AllowAny]
 
     @method_decorator(ratelimit(key="ip", rate="3/m", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"User registration attempt: {request.data}")
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            return Response(
-                {
-                    "success": True,
-                    "message": "Registration successful. OTP sent to your phone.",
-                    "phone_number": user.phone_number,
-                },
-                status=status.HTTP_201_CREATED,
-            )
+            try:
+                otp_code = generate_otp()
+                OTPVerification.objects.filter(
+                    phone_number=user.phone_number, otp_type="registration", is_verified=False
+                ).delete()
+                OTPVerification.objects.create(
+                    phone_number=user.phone_number,
+                    otp_code=otp_code,
+                    otp_type="registration",
+                    expires_at=timezone.now() + timedelta(minutes=5),
+                )
+                send_otp_sms(user.phone_number, otp_code, "registration")
+                logger.info(f"Registration OTP created for {user.phone_number}: {otp_code}")
+                return Response(
+                    {
+                        "success": True,
+                        "message": "Registration successful. OTP sent to your phone.",
+                        "phone_number": user.phone_number,
+                    },
+                    status=status.HTTP_201_CREATED,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send OTP during registration for {user.phone_number}: {str(e)}")
+                user.delete()
+                return Response(
+                    {"success": False, "error": f"Failed to send OTP: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
         return Response(
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
-@extend_schema_view(
-    post=extend_schema(
-        summary="Verify OTP",
-        description="""
-        Verify OTP code sent via SMS during registration or password reset.
-        
-        **OTP Types:**
-        - `registration`: Verify new account registration
-        - `login`: Verify login attempt
-        - `password_reset`: Verify password reset request
-        
-        **OTP Validity:**
-        - Valid for 5 minutes after generation
-        - Maximum 5 attempts allowed
-        - Case-sensitive 6-digit code
-        """,
-        request=OTPVerificationSerializer,
-        responses={
-            200: OpenApiResponse(
-                response=inline_serializer(
-                    name="OTPVerificationResponse",
-                    fields={
-                        "success": serializers.BooleanField(default=True),
-                        "message": serializers.CharField(),
-                        "access_token": serializers.CharField(required=False),
-                        "refresh_token": serializers.CharField(required=False),
-                        "user": UserProfileSerializer(required=False),
-                    },
-                ),
-                description="OTP verified successfully",
-                examples=[
-                    OpenApiExample(
-                        "Registration OTP Success",
-                        value={
-                            "success": True,
-                            "message": "OTP verified successfully.",
-                            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
-                            "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
-                            "user": {
-                                "id": "uuid-here",
-                                "phone_number": "01712345678",
-                                "full_name": "John Doe",
-                            },
-                        },
-                    )
-                ],
-            )
-        },
-        tags=["Authentication"],
-    )
-)
 class OTPVerificationView(APIView):
-    """
-    OTP verification endpoint.
-    """
-
     permission_classes = [permissions.AllowAny]
 
     @method_decorator(ratelimit(key="ip", rate="10/m", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"OTP verification attempt: {request.data}")
         serializer = OTPVerificationSerializer(data=request.data)
         if serializer.is_valid():
             phone_number = serializer.validated_data["phone_number"]
             otp_type = serializer.validated_data["otp_type"]
 
-            # Clear rate limits on successful verification
             clear_rate_limit(phone_number, "otp")
 
             response_data = {"success": True, "message": "OTP verified successfully."}
 
-            # If registration verification, generate tokens
             if otp_type == "registration":
                 try:
                     user = User.objects.get(phone_number=phone_number)
@@ -233,17 +202,12 @@ class OTPVerificationView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
 class ResendOTPView(APIView):
-    """
-    Resend OTP endpoint.
-    """
-
     permission_classes = [permissions.AllowAny]
 
     @method_decorator(ratelimit(key="ip", rate="2/m", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"Resend OTP attempt: {request.data}")
         phone_number = request.data.get("phone_number")
         otp_type = request.data.get("otp_type", "registration")
 
@@ -253,54 +217,49 @@ class ResendOTPView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Check rate limit
         if not check_rate_limit(phone_number, "otp", max_attempts=3, window_minutes=5):
             return Response(
                 {"success": False, "error": "Too many OTP requests. Please wait."},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        # Generate new OTP
-        otp_code = generate_otp()
-
-        # Create OTP verification record
-        OTPVerification.objects.create(
-            phone_number=phone_number,
-            otp_code=otp_code,
-            otp_type=otp_type,
-            expires_at=timezone.now() + timedelta(minutes=5),
-        )
-
-        # Send OTP
-        if send_otp_sms(phone_number, otp_code, otp_type):
+        try:
+            otp_code = generate_otp()
+            OTPVerification.objects.filter(
+                phone_number=phone_number, otp_type=otp_type, is_verified=False
+            ).delete()
+            OTPVerification.objects.create(
+                phone_number=phone_number,
+                otp_code=otp_code,
+                otp_type=otp_type,
+                expires_at=timezone.now() + timedelta(minutes=5),
+            )
+            send_otp_sms(phone_number, otp_code, otp_type)
+            logger.info(f"Resend OTP created for {phone_number}: {otp_code}")
             return Response(
                 {"success": True, "message": "OTP sent successfully."},
                 status=status.HTTP_200_OK,
             )
-        else:
+        except Exception as e:
+            logger.error(f"Failed to resend OTP to {phone_number}: {str(e)}")
             return Response(
-                {"success": False, "error": "Failed to send OTP."},
+                {"success": False, "error": f"Failed to send OTP: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-
 class CustomTokenObtainPairView(TokenObtainPairView):
-    """
-    Custom login view with additional security features.
-    """
-
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 
     @method_decorator(ratelimit(key="ip", rate="5/m", method="POST"))
     def post(self, request, *args, **kwargs):
+        logger.info(f"Custom login attempt: {request.data}")
         phone_number = request.data.get("phone_number", "")
         ip_address = get_client_ip(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
         logger.info(f"Login attempt for phone: {phone_number} from IP: {ip_address}")
 
-        # Check rate limit
         if not check_rate_limit(
             phone_number, "login", max_attempts=5, window_minutes=15
         ):
@@ -316,15 +275,12 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         if serializer.is_valid():
             user = serializer.validated_data["user"]
 
-            # Create tokens
             refresh = RefreshToken.for_user(user)
 
-            # Update last login info
             user.last_login = timezone.now()
             user.last_login_ip = ip_address
             user.save(update_fields=["last_login", "last_login_ip"])
 
-            # Log successful login
             create_login_attempt(phone_number, ip_address, user_agent, True)
             clear_rate_limit(phone_number, "login")
 
@@ -338,7 +294,6 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 status=status.HTTP_200_OK,
             )
 
-        # Log failed login
         create_login_attempt(
             phone_number, ip_address, user_agent, False, "Invalid credentials"
         )
@@ -348,41 +303,31 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
 class UserProfileView(RetrieveUpdateAPIView):
-    """
-    User profile view.
-    """
-
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
         return self.request.user
 
-    @log_api_call
     def get(self, request, *args, **kwargs):
+        logger.info(f"User profile GET: {request.user}")
         return super().get(request, *args, **kwargs)
 
-    @log_api_call
     def put(self, request, *args, **kwargs):
+        logger.info(f"User profile PUT: {request.user}, data: {request.data}")
         return super().put(request, *args, **kwargs)
 
-    @log_api_call
     def patch(self, request, *args, **kwargs):
+        logger.info(f"User profile PATCH: {request.user}, data: {request.data}")
         return super().patch(request, *args, **kwargs)
 
-
 class ChangePasswordView(APIView):
-    """
-    Change password endpoint.
-    """
-
     permission_classes = [permissions.IsAuthenticated]
 
     @method_decorator(ratelimit(key="user", rate="3/h", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"Change password attempt: {request.user}")
         serializer = ChangePasswordSerializer(
             data=request.data, context={"request": request}
         )
@@ -403,58 +348,49 @@ class ChangePasswordView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
 class PasswordResetView(APIView):
-    """
-    Password reset request endpoint.
-    """
-
     permission_classes = [permissions.AllowAny]
 
     @method_decorator(ratelimit(key="ip", rate="3/h", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"Password reset request: {request.data}")
         serializer = PasswordResetSerializer(data=request.data)
         if serializer.is_valid():
             phone_number = serializer.validated_data["phone_number"]
-
-            # Generate OTP
-            otp_code = generate_otp()
-
-            # Create OTP verification record
-            OTPVerification.objects.create(
-                phone_number=phone_number,
-                otp_code=otp_code,
-                otp_type="password_reset",
-                expires_at=timezone.now() + timedelta(minutes=5),
-            )
-
-            # Send OTP
             try:
-                if send_otp_sms(phone_number, otp_code, "password_reset"):
-                    return Response({"success": True})
-            except User.DoesNotExist:
-                return Response(
-                    {"success": False, "error": "User not found."},
-                    status=status.HTTP_404_NOT_FOUND,
+                otp_code = generate_otp()
+                OTPVerification.objects.filter(
+                    phone_number=phone_number, otp_type="password_reset", is_verified=False
+                ).delete()
+                OTPVerification.objects.create(
+                    phone_number=phone_number,
+                    otp_code=otp_code,
+                    otp_type="password_reset",
+                    expires_at=timezone.now() + timedelta(minutes=5),
                 )
-
+                send_otp_sms(phone_number, otp_code, "password_reset")
+                logger.info(f"Password reset OTP created for {phone_number}: {otp_code}")
+                return Response(
+                    {"success": True, "message": "OTP sent for password reset."},
+                    status=status.HTTP_200_OK,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send OTP for password reset to {phone_number}: {str(e)}")
+                return Response(
+                    {"success": False, "error": f"Failed to send OTP: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
         return Response(
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
 class PasswordResetConfirmView(APIView):
-    """
-    Password reset confirmation endpoint.
-    """
-
     permission_classes = [permissions.AllowAny]
 
     @method_decorator(ratelimit(key="ip", rate="5/h", method="POST"))
-    @log_api_call
     def post(self, request):
+        logger.info(f"Password reset confirm: {request.data}")
         serializer = PasswordResetConfirmSerializer(data=request.data)
         if serializer.is_valid():
             phone_number = serializer.validated_data["phone_number"]
@@ -474,18 +410,22 @@ class PasswordResetConfirmView(APIView):
                     status=status.HTTP_200_OK,
                 )
             except User.DoesNotExist:
-                return Response
+                return Response(
+                    {"success": False, "error": "User not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
+        return Response(
+            {"success": False, "errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 class LogoutView(APIView):
-    """
-    Logout endpoint that blacklists the refresh token.
-    """
-
     permission_classes = [permissions.IsAuthenticated]
 
-    @log_api_call
+    @method_decorator(ratelimit(key="user", rate="10/h", method="POST"))
     def post(self, request):
+        logger.info(f"Logout attempt: {request.user}")
         try:
             refresh_token = request.data.get("refresh_token")
             if refresh_token:
@@ -504,16 +444,11 @@ class LogoutView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-
 class UserPermissionsView(APIView):
-    """
-    View user permissions.
-    """
-
     permission_classes = [permissions.IsAuthenticated]
 
-    @log_api_call
     def get(self, request):
+        logger.info(f"User permissions view: {request.user}")
         permissions = UserPermission.objects.filter(
             user=request.user, is_granted=True
         ).select_related("permission")

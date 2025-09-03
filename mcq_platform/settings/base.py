@@ -264,6 +264,37 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
 ]
 
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'ERROR',
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs' / 'sms_errors.log',
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['file', 'console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}
 # Security Settings
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -292,7 +323,7 @@ EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@mcqplatform.com")
 
 # SMS Settings
-SMS_API_URL = "https://api.mimsms.com/api/SmsSending/SMS"
+SMS_API_URL = config("SMS_API_URL", default="https://api.mimsms.com/api/SmsSending/SMS")
 SMS_API_KEY = config("SMS_API_KEY")
 SMS_USERNAME = config("SMS_USERNAME")
 SMS_SENDER_ID = config("SMS_SENDER_ID")

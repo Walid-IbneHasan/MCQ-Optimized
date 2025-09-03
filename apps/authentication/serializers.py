@@ -5,7 +5,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import Permission, UserPermission, OTPVerification
 from .utils import generate_otp, send_otp_sms
 from utils.redis_client import redis_client
-from datetime import timedelta, timezone
+from django.utils import timezone
+from datetime import timedelta
 import re
 from drf_spectacular.utils import extend_schema_serializer, OpenApiExample
 

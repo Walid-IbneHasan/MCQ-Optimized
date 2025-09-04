@@ -43,21 +43,10 @@ def cache_response(timeout=300, key_prefix="view"):
 
 def log_api_call(func):
     """
-    Decorator to log API calls.
+    Decorator to log API calls - temporarily disabled to avoid issues.
     """
-
-    @wraps(func)
-    def wrapper(request, *args, **kwargs):
-        logger.info(f"API Call: {request.method} {request.path} - User: {request.user}")
-        try:
-            response = func(request, *args, **kwargs)
-            logger.info(f"API Response: {response.status_code}")
-            return response
-        except Exception as e:
-            logger.error(f"API Error: {str(e)}")
-            raise
-
-    return wrapper
+    # Temporarily return the original function without decoration
+    return func
 
 
 def require_subscription(func):

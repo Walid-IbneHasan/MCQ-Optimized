@@ -1,11 +1,11 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Avg
+from django.db import models
 from .models import Subject, Chapter
 from .serializers import SubjectSerializer, ChapterSerializer, ChapterDetailSerializer
 from utils.permissions import IsTeacherOrAbove
-from utils.decorators import log_api_call
 from apps.core.views import BaseViewSet
 
 
@@ -26,7 +26,6 @@ class SubjectViewSet(BaseViewSet):
             self.permission_classes = [permissions.AllowAny]
         return [permission() for permission in self.permission_classes]
 
-    @log_api_call
     def list(self, request, *args, **kwargs):
         """List all active subjects with chapter counts."""
         queryset = self.get_queryset().prefetch_related("chapters")
@@ -95,7 +94,6 @@ class ChapterViewSet(BaseViewSet):
             return ChapterDetailSerializer
         return ChapterSerializer
 
-    @log_api_call
     def list(self, request, *args, **kwargs):
         """List chapters."""
         return super().list(request, *args, **kwargs)
@@ -141,7 +139,7 @@ class ChapterViewSet(BaseViewSet):
         # Average score for this chapter
         avg_score = (
             ExamResult.objects.filter(exam__chapters=chapter).aggregate(
-                avg_score=models.Avg("score_percentage")
+                avg_score=models.Avg("percentage_score")
             )["avg_score"]
             or 0
         )

@@ -164,17 +164,27 @@ class ExamAdmin(admin.ModelAdmin):
 
     def average_score_display(self, obj):
         """Display average score with color coding."""
-        if obj.average_score >= 80:
+        # Coerce to float safely; handle None/invalid
+        try:
+            score_val = (
+                float(obj.average_score) if obj.average_score is not None else 0.0
+            )
+        except (TypeError, ValueError):
+            score_val = 0.0
+
+        if score_val >= 80:
             color = "green"
-        elif obj.average_score >= 60:
+        elif score_val >= 60:
             color = "orange"
         else:
             color = "red"
-        return format_html(
-            '<span style="color: {};">{:.2f}%</span>', color, obj.average_score
-        )
+
+        score_str = f"{score_val:.2f}%"  # pre-format as string
+        return format_html('<span style="color: {};">{}</span>', color, score_str)
 
     average_score_display.short_description = "Avg Score"
+    # (optional) let admins sort by the underlying numeric field:
+    average_score_display.admin_order_field = "average_score"
 
     def exam_status_display(self, obj):
         """Display exam status."""
@@ -419,19 +429,27 @@ class ExamSessionAdmin(admin.ModelAdmin):
 
     def percentage_score_display(self, obj):
         """Display percentage score with color."""
-        if obj.percentage_score is not None:
-            if obj.percentage_score >= 80:
-                color = "green"
-            elif obj.percentage_score >= 60:
-                color = "orange"
-            else:
-                color = "red"
-            return format_html(
-                '<span style="color: {};">{:.2f}%</span>', color, obj.percentage_score
-            )
-        return "-"
+        if obj.percentage_score is None:
+            return "-"
+
+        # Coerce to float safely
+        try:
+            score_val = float(obj.percentage_score)
+        except (TypeError, ValueError):
+            return "-"
+
+        if score_val >= 80:
+            color = "green"
+        elif score_val >= 60:
+            color = "orange"
+        else:
+            color = "red"
+
+        score_str = f"{score_val:.2f}%"
+        return format_html('<span style="color: {};">{}</span>', color, score_str)
 
     percentage_score_display.short_description = "Score"
+    percentage_score_display.admin_order_field = "percentage_score"
 
     def is_passed_display(self, obj):
         """Display pass/fail status."""
@@ -444,23 +462,59 @@ class ExamSessionAdmin(admin.ModelAdmin):
 
     is_passed_display.short_description = "Result"
 
+    # In ExamSessionAdmin
+
+    @staticmethod
+    def _count_items(value):
+        """Return a sensible count for lists/dicts/ints/JSON strings/etc."""
+        import json
+
+        if value is None:
+            return 0
+        # Already a numeric count
+        if isinstance(value, (int, float)):
+            return int(value)
+        # Common container types
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value)
+        # JSON string? Try to parse and count
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, (list, tuple, set, dict)):
+                    return len(parsed)
+                # Non-container JSON (e.g., number/string/bool)
+                return 1 if parsed else 0
+            except Exception:
+                # Non-JSON string: count as 1 if non-empty
+                return 1 if value.strip() else 0
+        # Fallback for anything else with __len__
+        try:
+            return len(value)
+        except Exception:
+            return 0
+
     def session_details(self, obj):
         """Display session details."""
         details = []
         details.append(
-            f"Questions: {len(obj.session_questions) if obj.session_questions else 0}"
+            f"Questions: {self._count_items(getattr(obj, 'session_questions', None))}"
         )
-        details.append(f"Answered: {obj.answers_submitted}")
+        details.append(f"Answered: {getattr(obj, 'answers_submitted', 0)}")
 
-        if obj.tab_switches > 0:
-            details.append(f"Tab Switches: {obj.tab_switches}")
+        tab_switches = getattr(obj, "tab_switches", 0) or 0
+        try:
+            if int(tab_switches) > 0:
+                details.append(f"Tab Switches: {int(tab_switches)}")
+        except (TypeError, ValueError):
+            pass
 
-        if obj.suspicious_activity:
-            details.append(f"Suspicious Activities: {len(obj.suspicious_activity)}")
+        suspicious = getattr(obj, "suspicious_activity", None)
+        susp_count = self._count_items(suspicious)
+        if susp_count > 0:
+            details.append(f"Suspicious Activities: {susp_count}")
 
         return format_html("<br>".join(details))
-
-    session_details.short_description = "Session Details"
 
     def force_submit(self, request, queryset):
         """Force submit sessions."""

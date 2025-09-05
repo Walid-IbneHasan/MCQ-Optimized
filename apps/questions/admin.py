@@ -150,18 +150,26 @@ class QuestionAdmin(admin.ModelAdmin):
     difficulty_badge.short_description = "Difficulty"
 
     def success_rate_display(self, obj):
-        rate = obj.success_rate
-        if rate == 0:
+        rate = getattr(obj, "success_rate", None)
+
+        # Coerce safely to a float
+        try:
+            rate_val = float(rate) if rate is not None else 0.0
+        except (TypeError, ValueError):
+            rate_val = 0.0
+
+        if rate_val == 0:
             color = "#6c757d"
-        elif rate < 30:
+        elif rate_val < 30:
             color = "#dc3545"
-        elif rate < 70:
+        elif rate_val < 70:
             color = "#ffc107"
         else:
             color = "#28a745"
 
+        rate_str = f"{rate_val:.1f}%"
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{:.1f}%</span>', color, rate
+            '<span style="color: {}; font-weight: bold;">{}</span>', color, rate_str
         )
 
     success_rate_display.short_description = "Success Rate"

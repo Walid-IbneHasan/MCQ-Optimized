@@ -55,7 +55,24 @@ def require_subscription(func):
     """
 
     @wraps(func)
-    def wrapper(request, *args, **kwargs):
+    def wrapper(*args, **kwargs):
+        # Handle both function-based views and class-based views
+        if len(args) > 0 and hasattr(args[0], "__class__"):
+            # Class-based view: first arg is self, second is request
+            if len(args) > 1:
+                request = args[1]
+            else:
+                request = kwargs.get("request")
+        else:
+            # Function-based view: first arg is request
+            request = args[0] if args else kwargs.get("request")
+
+        if not request or not hasattr(request, "user"):
+            return Response(
+                {"error": "Authentication required"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         if not request.user.is_authenticated:
             return Response(
                 {"error": "Authentication required"},
@@ -68,7 +85,7 @@ def require_subscription(func):
             "moderator",
             "teacher",
         ]:
-            return func(request, *args, **kwargs)
+            return func(*args, **kwargs)
 
         # Check subscription
         from apps.subscriptions.models import Subscription
@@ -79,6 +96,6 @@ def require_subscription(func):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        return func(request, *args, **kwargs)
+        return func(*args, **kwargs)
 
     return wrapper

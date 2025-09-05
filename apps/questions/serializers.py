@@ -190,7 +190,9 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
     """
 
     chapter = serializers.UUIDField()
-    questions = QuestionCreateSerializer(many=True)
+    questions = serializers.ListField(
+        child=serializers.DictField()
+    )  # Changed this line
 
     def validate_chapter(self, value):
         """Validate chapter exists."""
@@ -201,6 +203,30 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
         except Chapter.DoesNotExist:
             raise serializers.ValidationError("Invalid chapter.")
 
+    def validate_questions(self, value):
+        """Validate questions data."""
+        if not value:
+            raise serializers.ValidationError("At least one question is required.")
+
+        # Add chapter to each question for validation
+        chapter_id = self.initial_data.get("chapter")
+        validated_questions = []
+
+        for question_data in value:
+            # Add chapter ID to each question
+            question_data["chapter"] = chapter_id
+
+            # Validate using QuestionCreateSerializer
+            serializer = QuestionCreateSerializer(data=question_data)
+            if not serializer.is_valid():
+                raise serializers.ValidationError(
+                    f"Question validation failed: {serializer.errors}"
+                )
+
+            validated_questions.append(serializer.validated_data)
+
+        return validated_questions
+
     def create(self, validated_data):
         """Bulk create questions."""
         chapter = validated_data["chapter"]
@@ -208,15 +234,26 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
 
         created_questions = []
         for question_data in questions_data:
-            question_data["chapter"] = chapter
-            serializer = QuestionCreateSerializer(
-                data=question_data, context=self.context
-            )
-            if serializer.is_valid():
-                question = serializer.save()
-                created_questions.append(question)
-            else:
-                # You might want to handle individual question errors differently
-                pass
+            # The chapter is already set in validate_questions
+            # But we need to set created_by
+            question_data["created_by"] = self.context["request"].user
+
+            # Create question directly since it's already validated
+            options_data = question_data.pop("options")
+            tags_data = question_data.pop("tags", [])
+
+            # Create question
+            question = Question.objects.create(**question_data)
+
+            # Create options
+            for option_data in options_data:
+                QuestionOption.objects.create(question=question, **option_data)
+
+            # Handle tags
+            for tag_name in tags_data:
+                tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
+                QuestionTagging.objects.create(question=question, tag=tag)
+
+            created_questions.append(question)
 
         return created_questions

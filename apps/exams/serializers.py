@@ -213,41 +213,23 @@ class ExamStartSerializer(serializers.Serializer):
     Serializer for starting an exam.
     """
 
-    exam_id = serializers.UUIDField()
     custom_duration = serializers.IntegerField(required=False, min_value=1)
-
-    def validate_exam_id(self, value):
-        """Validate exam exists and can be started."""
-        try:
-            exam = Exam.objects.get(id=value, is_active=True)
-            if not exam.can_start_now:
-                raise serializers.ValidationError(
-                    "Exam cannot be started at this time."
-                )
-            return exam
-        except Exam.DoesNotExist:
-            raise serializers.ValidationError("Invalid exam.")
 
     def validate_custom_duration(self, value):
         """Validate custom duration."""
-        exam = self.initial_data.get("exam_id")
+        # Get exam from context instead of initial_data
+        exam = self.context.get("exam")
         if exam:
-            try:
-                exam_obj = Exam.objects.get(id=exam)
-                if not exam_obj.allow_custom_duration:
-                    raise serializers.ValidationError(
-                        "Custom duration not allowed for this exam."
-                    )
-
-                max_duration = (
-                    exam_obj.max_duration_minutes or exam_obj.duration_minutes
+            if not exam.allow_custom_duration:
+                raise serializers.ValidationError(
+                    "Custom duration not allowed for this exam."
                 )
-                if value > max_duration:
-                    raise serializers.ValidationError(
-                        f"Duration cannot exceed {max_duration} minutes."
-                    )
-            except Exam.DoesNotExist:
-                pass
+
+            max_duration = exam.max_duration_minutes or exam.duration_minutes
+            if value > max_duration:
+                raise serializers.ValidationError(
+                    f"Duration cannot exceed {max_duration} minutes."
+                )
 
         return value
 

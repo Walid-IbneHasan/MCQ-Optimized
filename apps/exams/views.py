@@ -376,96 +376,6 @@ class ExamViewSet(BaseViewSet):
             {"success": True, "exam_data": exam_data, "exported_at": timezone.now()}
         )
 
-    # Also add these missing methods to ExamSessionViewSet
-
-    @action(detail=True, methods=["post"])
-    def clear_review(self, request, pk=None):
-        """Clear review flag for a question."""
-        session = self.get_object()
-        question_id = request.data.get("question_id")
-
-        try:
-            answer = ExamAnswer.objects.get(session=session, question_id=question_id)
-            answer.is_marked_for_review = False
-            answer.save(update_fields=["is_marked_for_review"])
-
-            return Response({"success": True, "message": "Review flag cleared"})
-        except ExamAnswer.DoesNotExist:
-            return Response(
-                {"success": False, "error": "Answer not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-    @action(detail=True, methods=["post"])
-    def navigate_to_question(self, request, pk=None):
-        """Navigate to a specific question."""
-        session = self.get_object()
-        question_number = request.data.get("question_number", 1)
-
-        if session.status != "in_progress":
-            return Response(
-                {"success": False, "error": "Session is not active"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Update current question index
-        session.current_question_index = question_number - 1
-        session.save(update_fields=["current_question_index"])
-
-        return Response({"success": True, "current_question": question_number})
-
-    @action(detail=True, methods=["get"])
-    def status(self, request, pk=None):
-        """Get current session status."""
-        session = self.get_object()
-
-        return Response(
-            {
-                "success": True,
-                "status": session.status,
-                "started_at": session.started_at,
-                "time_remaining": session.time_remaining_seconds,
-                "answers_submitted": session.answers_submitted,
-                "total_questions": session.exam.total_questions,
-            }
-        )
-
-    @action(detail=True, methods=["post"])
-    def submit_exam(self, request, pk=None):
-        """Submit the exam session."""
-        session = self.get_object()
-
-        if session.status in ["completed", "auto_submitted"]:
-            return Response(
-                {"success": False, "error": "Exam already submitted"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Process any final answers
-        answers = request.data.get("answers", [])
-        for answer_data in answers:
-            question_id = answer_data.get("question_id")
-            selected_option_id = answer_data.get("selected_option_id")
-
-            if question_id:
-                ExamAnswer.objects.update_or_create(
-                    session=session,
-                    question_id=question_id,
-                    defaults={"selected_option_id": selected_option_id},
-                )
-
-        # Submit the session
-        session.submit_session(auto_submitted=False)
-
-        return Response(
-            {
-                "success": True,
-                "message": "Exam submitted successfully",
-                "session_id": str(session.id),
-            }
-        )
-
-    @log_api_call
     def list(self, request, *args, **kwargs):
         """List available exams."""
         queryset = self.filter_queryset(self.get_queryset())
@@ -480,7 +390,6 @@ class ExamViewSet(BaseViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response({"success": True, "exams": serializer.data})
 
-    @log_api_call
     def retrieve(self, request, *args, **kwargs):
         """Get exam details."""
         exam = self.get_object()
@@ -544,8 +453,10 @@ class ExamViewSet(BaseViewSet):
     def start_exam(self, request, pk=None):
         """Start an exam session."""
         exam = self.get_object()
+
+        # Pass exam in context instead of validating exam_id
         serializer = ExamStartSerializer(
-            data=request.data, context={"request": request}
+            data=request.data, context={"request": request, "exam": exam}
         )
 
         if serializer.is_valid():
@@ -559,6 +470,8 @@ class ExamViewSet(BaseViewSet):
 
             # Use subscription attempt if required
             if exam.requires_subscription and not request.user.is_teacher_or_above:
+                from apps.subscriptions.models import Subscription
+
                 subscription = Subscription.objects.filter(
                     user=request.user, is_active=True
                 ).first()
@@ -572,24 +485,65 @@ class ExamViewSet(BaseViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            with transaction.atomic():
-                # Create exam session
-                duration = serializer.validated_data.get(
-                    "custom_duration", exam.duration_minutes
+            try:
+                with transaction.atomic():
+                    # Create exam session
+                    duration = serializer.validated_data.get(
+                        "custom_duration", exam.duration_minutes
+                    )
+
+                    session = ExamSession.objects.create(
+                        exam=exam,
+                        user=request.user,
+                        duration_minutes=duration,
+                        ip_address=self._get_client_ip(request),
+                        user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                    )
+
+                    # Generate questions for this session
+                    questions = exam.get_questions(request.user)
+                    question_ids = [str(q.id) for q in questions]
+                    session.session_questions = question_ids
+                    session.save(update_fields=["session_questions"])
+
+                    # Create ExamQuestion records for tracking
+                    for i, question in enumerate(questions, 1):
+                        ExamQuestion.objects.create(
+                            session=session,
+                            question=question,
+                            question_number=i,
+                            options_order=[
+                                str(opt.id) for opt in question.options.all()
+                            ],
+                        )
+
+                    # Start the session
+                    session.start_session()
+
+                    # Return success response
+                    session_data = ExamSessionSerializer(session).data
+
+                    return Response(
+                        {
+                            "success": True,
+                            "message": "Exam started successfully",
+                            "session": session_data,
+                        },
+                        status=status.HTTP_201_CREATED,
+                    )
+
+            except Exception as e:
+                logger.error(f"Error starting exam session: {str(e)}")
+                return Response(
+                    {"success": False, "error": "Failed to start exam session"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
-                session = ExamSession.objects.create(
-                    exam=exam,
-                    user=request.user,
-                    duration_minutes=duration,
-                    ip_address=self._get_client_ip(request),
-                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
-                )
-
-                # Generate questions for this session
-                questions = exam.get_questions(request.user)
-                question_ids = [q.id for q in questions]
-                session.session_questions = question_ids
+        # Return validation errors
+        return Response(
+            {"success": False, "errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 @extend_schema_view(
@@ -866,6 +820,93 @@ class ExamSessionViewSet(BaseViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"])
+    def clear_review(self, request, pk=None):
+        """Clear review flag for a question."""
+        session = self.get_object()
+        question_id = request.data.get("question_id")
+
+        try:
+            answer = ExamAnswer.objects.get(session=session, question_id=question_id)
+            answer.is_marked_for_review = False
+            answer.save(update_fields=["is_marked_for_review"])
+
+            return Response({"success": True, "message": "Review flag cleared"})
+        except ExamAnswer.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Answer not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    @action(detail=True, methods=["post"])
+    def navigate_to_question(self, request, pk=None):
+        """Navigate to a specific question."""
+        session = self.get_object()
+        question_number = request.data.get("question_number", 1)
+
+        if session.status != "in_progress":
+            return Response(
+                {"success": False, "error": "Session is not active"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Update current question index
+        session.current_question_index = question_number - 1
+        session.save(update_fields=["current_question_index"])
+
+        return Response({"success": True, "current_question": question_number})
+
+    @action(detail=True, methods=["get"])
+    def status(self, request, pk=None):
+        """Get current session status."""
+        session = self.get_object()
+
+        return Response(
+            {
+                "success": True,
+                "status": session.status,
+                "started_at": session.started_at,
+                "time_remaining": session.time_remaining_seconds,
+                "answers_submitted": session.answers_submitted,
+                "total_questions": session.exam.total_questions,
+            }
+        )
+
+    @action(detail=True, methods=["post"])
+    def submit_exam(self, request, pk=None):
+        """Submit the exam session."""
+        session = self.get_object()
+
+        if session.status in ["completed", "auto_submitted"]:
+            return Response(
+                {"success": False, "error": "Exam already submitted"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Process any final answers
+        answers = request.data.get("answers", [])
+        for answer_data in answers:
+            question_id = answer_data.get("question_id")
+            selected_option_id = answer_data.get("selected_option_id")
+
+            if question_id:
+                ExamAnswer.objects.update_or_create(
+                    session=session,
+                    question_id=question_id,
+                    defaults={"selected_option_id": selected_option_id},
+                )
+
+        # Submit the session
+        session.submit_session(auto_submitted=False)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Exam submitted successfully",
+                "session_id": str(session.id),
+            }
+        )
+
 
 class ExamQuestionView(APIView):
     """
@@ -952,9 +993,8 @@ class ExamAnswerView(APIView):
 
             # Cache the answer in Redis for quick access
             cache_key = f"session:{session_id}:answer:{question_id}"
-            redis_client.setex(
+            redis_client.set(
                 cache_key,
-                3600,  # 1 hour
                 json.dumps(
                     {
                         "selected_option_id": (
@@ -963,6 +1003,7 @@ class ExamAnswerView(APIView):
                         "time_spent": time_spent,
                     }
                 ),
+                ex=3600,  # 1 hour expiry
             )
 
         return Response(

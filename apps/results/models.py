@@ -80,39 +80,52 @@ class ExamResult(BaseModel):
             f"{self.user.phone_number} - {self.exam.title} ({self.percentage_score}%)"
         )
 
+    def _safe_score(self):
+        """Return percentage_score as float, defaulting safely to 0.0."""
+        try:
+            return (
+                float(self.percentage_score)
+                if self.percentage_score is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            return 0.0
+
     @property
     def performance_rating(self):
         """Get performance rating based on percentage."""
-        if self.percentage_score >= 90:
+        score = self._safe_score()
+        if score >= 90:
             return "Excellent"
-        elif self.percentage_score >= 80:
+        elif score >= 80:
             return "Very Good"
-        elif self.percentage_score >= 70:
+        elif score >= 70:
             return "Good"
-        elif self.percentage_score >= 60:
+        elif score >= 60:
             return "Average"
         else:
             return "Below Average"
 
     def calculate_grade(self):
         """Calculate grade based on percentage score."""
-        if self.percentage_score >= 90:
+        score = self._safe_score()
+        if score >= 90:
             return "A+"
-        elif self.percentage_score >= 85:
+        elif score >= 85:
             return "A"
-        elif self.percentage_score >= 80:
+        elif score >= 80:
             return "A-"
-        elif self.percentage_score >= 75:
+        elif score >= 75:
             return "B+"
-        elif self.percentage_score >= 70:
+        elif score >= 70:
             return "B"
-        elif self.percentage_score >= 65:
+        elif score >= 65:
             return "B-"
-        elif self.percentage_score >= 60:
+        elif score >= 60:
             return "C+"
-        elif self.percentage_score >= 55:
+        elif score >= 55:
             return "C"
-        elif self.percentage_score >= 50:
+        elif score >= 50:
             return "C-"
         else:
             return "F"

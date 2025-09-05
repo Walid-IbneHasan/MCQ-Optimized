@@ -386,6 +386,7 @@ class QuestionAnalyticsViewSet(BaseViewSet):
     queryset = QuestionAnalytics.objects.all()
     serializer_class = QuestionAnalyticsSerializer
     permission_classes = [IsTeacherOrAbove]
+    lookup_field = 'question_id'
 
     @action(detail=False, methods=["get"])
     def needs_review(self, request):

@@ -14,6 +14,21 @@ from .models import (
 )
 
 
+def _float_or_zero(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fmt_num(x, digits=1):
+    return f"{_float_or_zero(x):.{digits}f}"
+
+
+def _fmt_pct(x, digits=1):
+    return f"{_float_or_zero(x):.{digits}f}%"
+
+
 @admin.register(ExamResult)
 class ExamResultAdmin(admin.ModelAdmin):
     list_display = [
@@ -36,7 +51,6 @@ class ExamResultAdmin(admin.ModelAdmin):
         "created_at",
     ]
     search_fields = [
-        "user__username",
         "user__email",
         "user__first_name",
         "user__last_name",
@@ -121,11 +135,7 @@ class ExamResultAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        return (
-            super()
-            .get_queryset(request)
-            .select_related("user", "exam", "session", "exam__subject")
-        )
+        return super().get_queryset(request).select_related("user", "exam", "session")
 
     def user_info(self, obj):
         return format_html(
@@ -148,10 +158,10 @@ class ExamResultAdmin(admin.ModelAdmin):
 
     def score_display(self, obj):
         return format_html(
-            '<div style="text-align: center;"><strong>{:.1f}%</strong><br><small>{:.1f}/{:.1f}</small></div>',
-            obj.percentage_score,
-            obj.marks_obtained,
-            obj.total_marks,
+            '<div style="text-align: center;"><strong>{}</strong><br><small>{}/{}</small></div>',
+            _fmt_pct(obj.percentage_score, 1),
+            _fmt_num(obj.marks_obtained, 1),
+            _fmt_num(obj.total_marks, 1),
         )
 
     score_display.short_description = "Score"
@@ -217,15 +227,14 @@ class ExamResultAdmin(admin.ModelAdmin):
     rank_display.short_description = "Rank"
 
     def accuracy_rate_display(self, obj):
+        rate_val = _float_or_zero(obj.accuracy_rate)
         color = (
-            "#28a745"
-            if obj.accuracy_rate >= 80
-            else "#ffc107" if obj.accuracy_rate >= 60 else "#dc3545"
+            "#28a745" if rate_val >= 80 else "#ffc107" if rate_val >= 60 else "#dc3545"
         )
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{:.1f}%</span>',
+            '<span style="color: {}; font-weight: bold;">{}</span>',
             color,
-            obj.accuracy_rate,
+            _fmt_pct(rate_val, 1),
         )
 
     accuracy_rate_display.short_description = "Accuracy"
@@ -274,6 +283,19 @@ class ExamResultAdmin(admin.ModelAdmin):
         "Generate certificates for passed students"
     )
 
+    def save_model(self, request, obj, form, change):
+        obj.average_time_per_question = (obj.time_taken_minutes or 0) / max(
+            1, obj.questions_attempted or 0
+        )
+        obj.accuracy_rate = (
+            (obj.correct_answers or 0) / max(1, obj.questions_attempted or 0) * 100.0
+        )
+        obj.percentage_score = (
+            (obj.marks_obtained or 0.0) / max(1.0, obj.total_marks or 0.0) * 100.0
+        )
+        obj.grade = obj.calculate_grade()
+        super().save_model(request, obj, form, change)
+
 
 @admin.register(UserPerformanceAnalytics)
 class UserPerformanceAnalyticsAdmin(admin.ModelAdmin):
@@ -292,7 +314,6 @@ class UserPerformanceAnalyticsAdmin(admin.ModelAdmin):
         "last_calculated",
     ]
     search_fields = [
-        "user__username",
         "user__email",
         "user__first_name",
         "user__last_name",
@@ -391,16 +412,14 @@ class UserPerformanceAnalyticsAdmin(admin.ModelAdmin):
     user_info.short_description = "User"
 
     def exams_summary(self, obj):
-        pass_rate = (
-            (obj.total_exams_passed / obj.total_exams_taken * 100)
-            if obj.total_exams_taken > 0
-            else 0
-        )
+        total = int(obj.total_exams_taken or 0)
+        passed = int(obj.total_exams_passed or 0)
+        pass_rate = (passed / total * 100) if total > 0 else 0.0
         return format_html(
-            '<div style="text-align: center;"><strong>{}/{}</strong><br><small>{:.1f}% pass rate</small></div>',
-            obj.total_exams_passed,
-            obj.total_exams_taken,
-            pass_rate,
+            '<div style="text-align: center;"><strong>{}/{}</strong><br><small>{} pass rate</small></div>',
+            passed,
+            total,
+            _fmt_pct(pass_rate, 1),
         )
 
     exams_summary.short_description = "Exams (Passed/Total)"
@@ -408,12 +427,12 @@ class UserPerformanceAnalyticsAdmin(admin.ModelAdmin):
     def score_summary(self, obj):
         return format_html(
             '<div style="text-align: center;">'
-            "<strong>{:.1f}%</strong> avg<br>"
-            "<small>Best: {:.1f}% | Worst: {:.1f}%</small>"
+            "<strong>{}</strong> avg<br>"
+            "<small>Best: {} | Worst: {}</small>"
             "</div>",
-            obj.average_score,
-            obj.best_score,
-            obj.worst_score,
+            _fmt_pct(obj.average_score, 1),
+            _fmt_pct(obj.best_score, 1),
+            _fmt_pct(obj.worst_score, 1),
         )
 
     score_summary.short_description = "Scores"
@@ -473,7 +492,6 @@ class SubjectPerformanceAdmin(admin.ModelAdmin):
         "average_score",
     ]
     search_fields = [
-        "user__username",
         "user__phone_number",
         "subject__name",
     ]
@@ -500,29 +518,25 @@ class SubjectPerformanceAdmin(admin.ModelAdmin):
     def performance_summary(self, obj):
         return format_html(
             '<div style="text-align: center;">'
-            "<strong>{:.1f}%</strong> avg<br>"
+            "<strong>{}</strong> avg<br>"
             "<small>{}/{} passed</small>"
             "</div>",
-            obj.average_score,
-            obj.exams_passed,
-            obj.exams_taken,
+            _fmt_pct(obj.average_score, 1),
+            int(obj.exams_passed or 0),
+            int(obj.exams_taken or 0),
         )
 
     performance_summary.short_description = "Performance"
 
     def improvement_display(self, obj):
-        color = (
-            "#28a745"
-            if obj.improvement > 0
-            else "#dc3545" if obj.improvement < 0 else "#6c757d"
-        )
-        symbol = "+" if obj.improvement > 0 else ""
-
+        val = _float_or_zero(obj.improvement)
+        color = "#28a745" if val > 0 else "#dc3545" if val < 0 else "#6c757d"
+        symbol = "+" if val > 0 else ""
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{}{:.1f}%</span>',
+            '<span style="color: {}; font-weight: bold;">{}{}</span>',
             color,
             symbol,
-            obj.improvement,
+            _fmt_pct(val, 1),
         )
 
     improvement_display.short_description = "Improvement"
@@ -695,40 +709,34 @@ class ExamAnalyticsAdmin(admin.ModelAdmin):
     def score_summary(self, obj):
         return format_html(
             '<div style="text-align: center;">'
-            "<strong>{:.1f}%</strong> avg<br>"
-            "<small>{:.1f}% - {:.1f}%</small>"
+            "<strong>{}</strong> avg<br>"
+            "<small>{} - {}</small>"
             "</div>",
-            obj.average_score,
-            obj.lowest_score,
-            obj.highest_score,
+            _fmt_pct(obj.average_score, 1),
+            _fmt_pct(obj.lowest_score, 1),
+            _fmt_pct(obj.highest_score, 1),
         )
 
     score_summary.short_description = "Scores"
 
     def pass_rate_display(self, obj):
-        color = (
-            "#28a745"
-            if obj.pass_rate >= 80
-            else "#ffc107" if obj.pass_rate >= 60 else "#dc3545"
-        )
+        val = _float_or_zero(obj.pass_rate)
+        color = "#28a745" if val >= 80 else "#ffc107" if val >= 60 else "#dc3545"
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{:.1f}%</span>',
+            '<span style="color: {}; font-weight: bold;">{}</span>',
             color,
-            obj.pass_rate,
+            _fmt_pct(val, 1),
         )
 
     pass_rate_display.short_description = "Pass Rate"
 
     def completion_rate_display(self, obj):
-        color = (
-            "#28a745"
-            if obj.completion_rate >= 90
-            else "#ffc107" if obj.completion_rate >= 70 else "#dc3545"
-        )
+        val = _float_or_zero(obj.completion_rate)
+        color = "#28a745" if val >= 90 else "#ffc107" if val >= 70 else "#dc3545"
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{:.1f}%</span>',
+            '<span style="color: {}; font-weight: bold;">{}</span>',
             color,
-            obj.completion_rate,
+            _fmt_pct(val, 1),
         )
 
     completion_rate_display.short_description = "Completion Rate"
@@ -736,13 +744,12 @@ class ExamAnalyticsAdmin(admin.ModelAdmin):
     def difficulty_analysis(self, obj):
         if not obj.question_difficulty_analysis:
             return "-"
-
         analysis = obj.question_difficulty_analysis
         return format_html(
-            "<small>Easy: {:.0f}% | Medium: {:.0f}% | Hard: {:.0f}%</small>",
-            analysis.get("easy", 0),
-            analysis.get("medium", 0),
-            analysis.get("hard", 0),
+            "<small>Easy: {} | Medium: {} | Hard: {}</small>",
+            _fmt_pct(analysis.get("easy", 0), 0),
+            _fmt_pct(analysis.get("medium", 0), 0),
+            _fmt_pct(analysis.get("hard", 0), 0),
         )
 
     difficulty_analysis.short_description = "Difficulty Success"
@@ -807,39 +814,31 @@ class QuestionAnalyticsAdmin(admin.ModelAdmin):
     usage_summary.short_description = "Usage"
 
     def performance_metrics(self, obj):
-        success_color = (
-            "#28a745"
-            if obj.success_rate >= 70
-            else "#ffc107" if obj.success_rate >= 40 else "#dc3545"
-        )
-
+        sr = _float_or_zero(obj.success_rate)
+        success_color = "#28a745" if sr >= 70 else "#ffc107" if sr >= 40 else "#dc3545"
         return format_html(
             '<div style="text-align: center;">'
-            '<span style="color: {}; font-weight: bold;">{:.1f}%</span> success<br>'
-            "<small>{:.2f} difficulty index</small>"
+            '<span style="color: {}; font-weight: bold;">{}</span> success<br>'
+            "<small>{} difficulty index</small>"
             "</div>",
             success_color,
-            obj.success_rate,
-            obj.difficulty_index,
+            _fmt_pct(sr, 1),
+            _fmt_num(obj.difficulty_index, 2),
         )
 
     performance_metrics.short_description = "Performance"
 
     def quality_indicators(self, obj):
-        quality_color = (
-            "#28a745"
-            if obj.quality_score >= 80
-            else "#ffc107" if obj.quality_score >= 60 else "#dc3545"
-        )
-
+        q = _float_or_zero(obj.quality_score)
+        quality_color = "#28a745" if q >= 80 else "#ffc107" if q >= 60 else "#dc3545"
         return format_html(
             '<div style="text-align: center;">'
-            '<span style="color: {}; font-weight: bold;">{:.1f}</span> quality<br>'
-            "<small>{:.2f} discrimination</small>"
+            '<span style="color: {}; font-weight: bold;">{}</span> quality<br>'
+            "<small>{} discrimination</small>"
             "</div>",
             quality_color,
-            obj.quality_score,
-            obj.discrimination_index,
+            _fmt_num(q, 1),
+            _fmt_num(obj.discrimination_index, 2),
         )
 
     quality_indicators.short_description = "Quality"

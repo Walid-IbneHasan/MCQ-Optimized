@@ -176,12 +176,14 @@ class UserLeaderboardSummarySerializer(serializers.Serializer):
         """Get user's global ranking."""
         user = obj["user"]
 
-        # Get current global leaderboard
+        # Get current global leaderboard - fix the filter to use proper date comparison
         try:
+            now = timezone.now()
             global_leaderboard = Leaderboard.objects.filter(
                 leaderboard_type__scope="global",
                 leaderboard_type__period="monthly",
-                is_current_period=True,
+                period_start__lte=now,
+                period_end__gte=now,  # Use date comparison instead of is_current_period
             ).first()
 
             if global_leaderboard:
@@ -197,12 +199,16 @@ class UserLeaderboardSummarySerializer(serializers.Serializer):
                             (1 - (rank / global_leaderboard.total_participants)) * 100,
                             1,
                         )
-                        if rank
+                        if rank and global_leaderboard.total_participants > 0
                         else 0
                     ),
                 }
-        except:
-            pass
+        except Exception as e:
+            # Log the error but don't break the response
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error getting global rank for user {user.id}: {str(e)}")
 
         return None
 
@@ -211,28 +217,36 @@ class UserLeaderboardSummarySerializer(serializers.Serializer):
         user = obj["user"]
         subject_ranks = []
 
-        # Get subject-wise rankings
-        subject_leaderboards = Leaderboard.objects.filter(
-            leaderboard_type__scope="subject",
-            is_current_period=True,
-            entries__user=user,
-        ).select_related("subject")
+        try:
+            # Get subject-wise rankings - fix the filter
+            now = timezone.now()
+            subject_leaderboards = Leaderboard.objects.filter(
+                leaderboard_type__scope="subject",
+                period_start__lte=now,
+                period_end__gte=now,  # Use date comparison instead of is_current_period
+                entries__user=user,
+            ).select_related("subject")
 
-        for leaderboard in subject_leaderboards:
-            entry = leaderboard.entries.filter(user=user).first()
-            if entry:
-                subject_ranks.append(
-                    {
-                        "subject": (
-                            leaderboard.subject.name
-                            if leaderboard.subject
-                            else "Unknown"
-                        ),
-                        "rank": entry.rank,
-                        "score": entry.score,
-                        "total_participants": leaderboard.total_participants,
-                    }
-                )
+            for leaderboard in subject_leaderboards:
+                entry = leaderboard.entries.filter(user=user).first()
+                if entry:
+                    subject_ranks.append(
+                        {
+                            "subject": (
+                                leaderboard.subject.name
+                                if leaderboard.subject
+                                else "Unknown"
+                            ),
+                            "rank": entry.rank,
+                            "score": entry.score,
+                            "total_participants": leaderboard.total_participants,
+                        }
+                    )
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error getting subject ranks for user {user.id}: {str(e)}")
 
         return subject_ranks
 
@@ -240,44 +254,62 @@ class UserLeaderboardSummarySerializer(serializers.Serializer):
         """Get user's recent achievements."""
         user = obj["user"]
 
-        # Get recent achievements from leaderboard entries
-        recent_entries = LeaderboardEntry.objects.filter(
-            user=user, created_at__gte=timezone.now() - timedelta(days=30)
-        ).exclude(achievements=[])
+        try:
+            # Get recent achievements from leaderboard entries
+            recent_entries = LeaderboardEntry.objects.filter(
+                user=user, created_at__gte=timezone.now() - timedelta(days=30)
+            ).exclude(achievements=[])
 
-        achievements = []
-        for entry in recent_entries:
-            for achievement in entry.achievements:
-                achievements.append(
-                    {
-                        "title": achievement.get("title"),
-                        "description": achievement.get("description"),
-                        "earned_at": entry.created_at,
-                        "leaderboard": entry.leaderboard.leaderboard_type.name,
-                    }
-                )
+            achievements = []
+            for entry in recent_entries:
+                for achievement in entry.achievements:
+                    achievements.append(
+                        {
+                            "title": achievement.get("title"),
+                            "description": achievement.get("description"),
+                            "earned_at": entry.created_at,
+                            "leaderboard": entry.leaderboard.leaderboard_type.name,
+                        }
+                    )
 
-        return achievements[:5]  # Return latest 5 achievements
+            return achievements[:5]  # Return latest 5 achievements
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Error getting recent achievements for user {user.id}: {str(e)}"
+            )
+            return []
 
     def get_performance_trends(self, obj):
         """Get user's performance trends."""
         user = obj["user"]
 
-        # Get performance trends from recent entries
-        recent_entries = LeaderboardEntry.objects.filter(user=user).order_by(
-            "-created_at"
-        )[:5]
+        try:
+            # Get performance trends from recent entries
+            recent_entries = LeaderboardEntry.objects.filter(user=user).order_by(
+                "-created_at"
+            )[:5]
 
-        trends = []
-        for entry in recent_entries:
-            trends.append(
-                {
-                    "period": f"{entry.leaderboard.period_start.date()} to {entry.leaderboard.period_end.date()}",
-                    "rank": entry.rank,
-                    "score": entry.score,
-                    "trend": entry.performance_trend,
-                    "improvement_rate": entry.improvement_rate,
-                }
+            trends = []
+            for entry in recent_entries:
+                trends.append(
+                    {
+                        "period": f"{entry.leaderboard.period_start.date()} to {entry.leaderboard.period_end.date()}",
+                        "rank": entry.rank,
+                        "score": entry.score,
+                        "trend": entry.performance_trend,
+                        "improvement_rate": entry.improvement_rate,
+                    }
+                )
+
+            return trends
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Error getting performance trends for user {user.id}: {str(e)}"
             )
-
-        return trends
+            return []

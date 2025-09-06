@@ -312,11 +312,15 @@ class UserLeaderboardSummaryViewSet(BaseViewSet):
         """Get comprehensive leaderboard dashboard for user."""
         user = request.user
 
+        # Fix: Use proper date filtering instead of is_current_period
+        now = timezone.now()
+        current_leaderboards = Leaderboard.objects.filter(
+            entries__user=user, period_start__lte=now, period_end__gte=now
+        ).distinct()
+
         dashboard_data = {
             "user": user,
-            "leaderboards": Leaderboard.objects.filter(
-                entries__user=user, is_current_period=True
-            ),
+            "leaderboards": current_leaderboards,
         }
 
         serializer = UserLeaderboardSummarySerializer(dashboard_data)

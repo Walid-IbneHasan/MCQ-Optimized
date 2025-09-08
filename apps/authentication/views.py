@@ -45,6 +45,7 @@ import logging
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
+
 @extend_schema_view(
     post=extend_schema(
         summary="Register new user",
@@ -136,7 +137,9 @@ class UserRegistrationView(APIView):
             try:
                 otp_code = generate_otp()
                 OTPVerification.objects.filter(
-                    phone_number=user.phone_number, otp_type="registration", is_verified=False
+                    phone_number=user.phone_number,
+                    otp_type="registration",
+                    is_verified=False,
                 ).delete()
                 OTPVerification.objects.create(
                     phone_number=user.phone_number,
@@ -145,7 +148,9 @@ class UserRegistrationView(APIView):
                     expires_at=timezone.now() + timedelta(minutes=5),
                 )
                 send_otp_sms(user.phone_number, otp_code, "registration")
-                logger.info(f"Registration OTP created for {user.phone_number}: {otp_code}")
+                logger.info(
+                    f"Registration OTP created for {user.phone_number}: {otp_code}"
+                )
                 return Response(
                     {
                         "success": True,
@@ -155,7 +160,9 @@ class UserRegistrationView(APIView):
                     status=status.HTTP_201_CREATED,
                 )
             except Exception as e:
-                logger.error(f"Failed to send OTP during registration for {user.phone_number}: {str(e)}")
+                logger.error(
+                    f"Failed to send OTP during registration for {user.phone_number}: {str(e)}"
+                )
                 user.delete()
                 return Response(
                     {"success": False, "error": f"Failed to send OTP: {str(e)}"},
@@ -165,6 +172,7 @@ class UserRegistrationView(APIView):
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
 
 class OTPVerificationView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -201,6 +209,7 @@ class OTPVerificationView(APIView):
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
 
 class ResendOTPView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -246,6 +255,7 @@ class ResendOTPView(APIView):
                 {"success": False, "error": f"Failed to send OTP: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     permission_classes = [permissions.AllowAny]
@@ -303,6 +313,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+
 class UserProfileView(RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -321,6 +332,7 @@ class UserProfileView(RetrieveUpdateAPIView):
     def patch(self, request, *args, **kwargs):
         logger.info(f"User profile PATCH: {request.user}, data: {request.data}")
         return super().patch(request, *args, **kwargs)
+
 
 class ChangePasswordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -348,8 +360,10 @@ class ChangePasswordView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+
 class PasswordResetView(APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
     @method_decorator(ratelimit(key="ip", rate="3/h", method="POST"))
     def post(self, request):
@@ -360,7 +374,9 @@ class PasswordResetView(APIView):
             try:
                 otp_code = generate_otp()
                 OTPVerification.objects.filter(
-                    phone_number=phone_number, otp_type="password_reset", is_verified=False
+                    phone_number=phone_number,
+                    otp_type="password_reset",
+                    is_verified=False,
                 ).delete()
                 OTPVerification.objects.create(
                     phone_number=phone_number,
@@ -369,13 +385,17 @@ class PasswordResetView(APIView):
                     expires_at=timezone.now() + timedelta(minutes=5),
                 )
                 send_otp_sms(phone_number, otp_code, "password_reset")
-                logger.info(f"Password reset OTP created for {phone_number}: {otp_code}")
+                logger.info(
+                    f"Password reset OTP created for {phone_number}: {otp_code}"
+                )
                 return Response(
                     {"success": True, "message": "OTP sent for password reset."},
                     status=status.HTTP_200_OK,
                 )
             except Exception as e:
-                logger.error(f"Failed to send OTP for password reset to {phone_number}: {str(e)}")
+                logger.error(
+                    f"Failed to send OTP for password reset to {phone_number}: {str(e)}"
+                )
                 return Response(
                     {"success": False, "error": f"Failed to send OTP: {str(e)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -385,6 +405,8 @@ class PasswordResetView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+
+# apps/authentication/views.py
 class PasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -392,9 +414,11 @@ class PasswordResetConfirmView(APIView):
     def post(self, request):
         logger.info(f"Password reset confirm: {request.data}")
         serializer = PasswordResetConfirmSerializer(data=request.data)
+
         if serializer.is_valid():
             phone_number = serializer.validated_data["phone_number"]
             new_password = serializer.validated_data["new_password"]
+            otp_verification = serializer.validated_data["otp_verification"]
 
             try:
                 user = User.objects.get(phone_number=phone_number, is_active=True)
@@ -402,6 +426,13 @@ class PasswordResetConfirmView(APIView):
                 user.failed_login_attempts = 0
                 user.account_locked_until = None
                 user.save()
+
+                # Mark OTP as consumed after successful password reset
+                from django.utils import timezone
+
+                otp_verification.is_consumed = True
+                otp_verification.consumed_at = timezone.now()
+                otp_verification.save()
 
                 logger.info(f"Password reset successful for user: {phone_number}")
 
@@ -419,6 +450,7 @@ class PasswordResetConfirmView(APIView):
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
 
 class LogoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -443,6 +475,7 @@ class LogoutView(APIView):
                 {"success": False, "error": "Invalid token."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
 
 class UserPermissionsView(APIView):
     permission_classes = [permissions.IsAuthenticated]

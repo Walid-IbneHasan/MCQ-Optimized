@@ -12,20 +12,31 @@ User = get_user_model()
 @shared_task
 def cleanup_expired_otps():
     """
-    Remove expired OTP records.
+    Remove expired and consumed OTP records.
     """
     try:
+        # Remove expired OTPs
         expired_otps = OTPVerification.objects.filter(
             expires_at__lt=timezone.now(),
             created_at__lt=timezone.now() - timedelta(hours=24),
         )
-        count = expired_otps.count()
+        expired_count = expired_otps.count()
         expired_otps.delete()
 
-        logger.info(f"Cleaned up {count} expired OTP records")
-        return f"Cleaned up {count} expired OTP records"
+        # Remove consumed OTPs older than 1 hour
+        consumed_otps = OTPVerification.objects.filter(
+            is_consumed=True, consumed_at__lt=timezone.now() - timedelta(hours=1)
+        )
+        consumed_count = consumed_otps.count()
+        consumed_otps.delete()
+
+        total_cleaned = expired_count + consumed_count
+        logger.info(
+            f"Cleaned up {expired_count} expired and {consumed_count} consumed OTP records"
+        )
+        return f"Cleaned up {total_cleaned} OTP records"
     except Exception as e:
-        logger.error(f"Error cleaning up expired OTPs: {str(e)}")
+        logger.error(f"Error cleaning up OTPs: {str(e)}")
         raise
 
 

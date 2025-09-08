@@ -153,6 +153,8 @@ class OTPVerification(TimeStampedModel, UUIDModel):
     expires_at = models.DateTimeField()
     attempts = models.PositiveIntegerField(default=0)
     max_attempts = models.PositiveIntegerField(default=5)
+    is_consumed = models.BooleanField(default=False)  
+    consumed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "otp_verifications"

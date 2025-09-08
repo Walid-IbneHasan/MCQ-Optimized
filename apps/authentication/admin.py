@@ -106,21 +106,17 @@ class UserPermissionAdmin(admin.ModelAdmin):
 
 @admin.register(OTPVerification)
 class OTPVerificationAdmin(admin.ModelAdmin):
-    """
-    OTP Verification admin.
-    """
-
     list_display = [
         "phone_number",
         "otp_type",
         "is_verified",
-        "attempts",
+        "is_consumed",
         "expires_at",
         "created_at",
     ]
-    list_filter = ["otp_type", "is_verified", "created_at"]
+    list_filter = ["otp_type", "is_verified", "is_consumed", "created_at"]
     search_fields = ["phone_number"]
-    readonly_fields = ["otp_code"]
+    readonly_fields = ["consumed_at"]
 
 
 @admin.register(LoginAttempt)

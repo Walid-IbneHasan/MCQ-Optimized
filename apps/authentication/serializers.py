@@ -16,26 +16,26 @@ User = get_user_model()
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
-            'Registration Example',
-            summary='User registration with all fields',
-            description='Example of user registration with complete information',
+            "Registration Example",
+            summary="User registration with all fields",
+            description="Example of user registration with complete information",
             value={
-                'phone_number': '01712345678',
-                'password': 'SecurePass123!',
-                'confirm_password': 'SecurePass123!',
-                'first_name': 'John',
-                'last_name': 'Doe',
-                'email': 'john.doe@example.com'
+                "phone_number": "01712345678",
+                "password": "SecurePass123!",
+                "confirm_password": "SecurePass123!",
+                "first_name": "John",
+                "last_name": "Doe",
+                "email": "john.doe@example.com",
             },
             request_only=True,
         ),
     ]
 )
-
 class UserRegistrationSerializer(serializers.ModelSerializer):
     """
     Serializer for user registration.
     """
+
     password = serializers.CharField(write_only=True, validators=[validate_password])
     confirm_password = serializers.CharField(write_only=True)
 
@@ -77,15 +77,16 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         user = User.objects.create_user(**validated_data)
         return user
 
+
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
-            'OTP Verification Example',
-            summary='Verify OTP for registration',
+            "OTP Verification Example",
+            summary="Verify OTP for registration",
             value={
-                'phone_number': '01712345678',
-                'otp_code': '123456',
-                'otp_type': 'registration'
+                "phone_number": "01712345678",
+                "otp_code": "123456",
+                "otp_type": "registration",
             },
             request_only=True,
         ),
@@ -140,20 +141,17 @@ class OTPVerificationSerializer(serializers.Serializer):
 
         return attrs
 
+
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
-            'Login Example',
-            summary='User login credentials',
-            value={
-                'phone_number': '01712345678',
-                'password': 'SecurePass123!'
-            },
+            "Login Example",
+            summary="User login credentials",
+            value={"phone_number": "01712345678", "password": "SecurePass123!"},
             request_only=True,
         ),
     ]
 )
-
 class UserLoginSerializer(serializers.Serializer):
     """
     Serializer for user login.
@@ -277,6 +275,7 @@ class PasswordResetSerializer(serializers.Serializer):
         return value
 
 
+# apps/authentication/serializers.py
 class PasswordResetConfirmSerializer(serializers.Serializer):
     """
     Serializer for password reset confirmation.
@@ -294,29 +293,42 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if attrs["new_password"] != attrs["confirm_password"]:
             raise serializers.ValidationError("Passwords don't match.")
 
-        # Validate OTP
+        # Validate OTP for password reset
         phone_number = attrs["phone_number"]
         otp_code = attrs["otp_code"]
 
         try:
+            # For password reset, allow already verified OTPs that aren't consumed
             otp_verification = OTPVerification.objects.get(
-                phone_number=phone_number, otp_type="password_reset", is_verified=False
+                phone_number=phone_number,
+                otp_type="password_reset",
+                otp_code=otp_code,
+                is_consumed=False,  # Must not be consumed yet
             )
         except OTPVerification.DoesNotExist:
-            raise serializers.ValidationError("Invalid OTP request.")
+            raise serializers.ValidationError("Invalid or already used OTP.")
 
+        # Check if OTP has expired
         if otp_verification.is_expired():
             raise serializers.ValidationError("OTP has expired.")
 
-        if otp_verification.otp_code != otp_code:
-            otp_verification.attempts += 1
-            otp_verification.save()
-            raise serializers.ValidationError("Invalid OTP code.")
+        # Check if OTP is verified
+        if not otp_verification.is_verified:
+            raise serializers.ValidationError("OTP must be verified first.")
 
-        # Mark OTP as verified
-        otp_verification.is_verified = True
-        otp_verification.save()
+        # Time-based validation: OTP must be verified within last 10 minutes
+        from django.utils import timezone
+        from datetime import timedelta
 
+        # Check when the OTP was last updated (when it was verified)
+        time_since_verification = timezone.now() - otp_verification.updated_at
+        if time_since_verification > timedelta(minutes=10):
+            raise serializers.ValidationError(
+                "OTP verification has expired. Please request a new OTP."
+            )
+
+        # Store the OTP verification object for later use
+        attrs["otp_verification"] = otp_verification
         return attrs
 
 

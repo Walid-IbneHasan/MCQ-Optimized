@@ -46,6 +46,7 @@ class Exam(BaseModel):
 
     # Question Settings
     total_questions = models.PositiveIntegerField(default=50)
+    # Cached summaries for admin/reporting
     questions_per_chapter = models.JSONField(
         default=dict, blank=True
     )  # {chapter_id: count}
@@ -90,6 +91,27 @@ class Exam(BaseModel):
 
     objects = SoftDeleteManager()
 
+    # Question Selection Method
+    QUESTION_SELECTION_CHOICES = [
+        ("random", "Random Selection"),
+        ("manual", "Manual Selection"),
+        ("mixed", "Mixed (Random + Manual)"),
+    ]
+
+    question_selection_method = models.CharField(
+        max_length=10, choices=QUESTION_SELECTION_CHOICES, default="random"
+    )
+
+    # For manual selection - store selected question IDs
+    selected_questions = models.JSONField(
+        default=list, blank=True, help_text="List of manually selected question IDs"
+    )
+
+    # For mixed selection - how many random vs manual
+    random_questions_count = models.PositiveIntegerField(
+        default=0, help_text="Number of random questions when using mixed selection"
+    )
+
     class Meta:
         db_table = "exams"
         ordering = ["-created_at"]
@@ -122,24 +144,68 @@ class Exam(BaseModel):
             return self.is_scheduled_active
         return True
 
+    # ---------- SINGLE canonical implementation ----------
     def get_questions(self, user=None):
-        """Get questions for this exam based on configuration."""
-        questions = (
+        """
+        Resolve the concrete list of questions this exam should use,
+        honoring the selection method and randomization options.
+        """
+        # Manual -> strictly what the teacher picked
+        if self.question_selection_method == "manual":
+            qs = (
+                Question.objects.filter(id__in=self.selected_questions, is_active=True)
+                .select_related("chapter")
+                .prefetch_related("options")
+            )
+
+            # maintain teacher's order, then optionally shuffle
+            q_map = {str(q.id): q for q in qs}
+            ordered = [q_map[qid] for qid in self.selected_questions if qid in q_map]
+
+            if self.randomize_questions:
+                import random
+
+                random.shuffle(ordered)
+
+            return ordered[: self.total_questions]
+
+        # Mixed -> some manual, some random from the chosen chapters
+        if self.question_selection_method == "mixed":
+            manual = list(
+                Question.objects.filter(id__in=self.selected_questions, is_active=True)
+                .select_related("chapter")
+                .prefetch_related("options")
+            )
+
+            random_needed = max(0, self.total_questions - len(manual))
+            if self.random_questions_count:
+                random_needed = self.random_questions_count
+
+            random_pool = (
+                Question.objects.filter(chapter__in=self.chapters.all(), is_active=True)
+                .exclude(id__in=self.selected_questions)
+                .order_by("?")[:random_needed]
+                .select_related("chapter")
+                .prefetch_related("options")
+            )
+
+            combined = manual + list(random_pool)
+            if self.randomize_questions:
+                import random
+
+                random.shuffle(combined)
+
+            return combined[: self.total_questions]
+
+        # Random -> sample from chapters
+        qs = (
             Question.objects.filter(chapter__in=self.chapters.all(), is_active=True)
             .select_related("chapter")
             .prefetch_related("options")
         )
-
-        # Apply difficulty filter if specified
-        if self.difficulty_distribution:
-            # This would need more complex logic to distribute questions by difficulty
-            pass
-
-        # Randomize if enabled
         if self.randomize_questions:
-            questions = questions.order_by("?")
-
-        return questions[: self.total_questions]
+            qs = qs.order_by("?")
+        return list(qs[: self.total_questions])
 
 
 class ExamSession(BaseModel):

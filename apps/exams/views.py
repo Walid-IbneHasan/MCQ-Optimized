@@ -448,6 +448,145 @@ class ExamViewSet(BaseViewSet):
 
         return {"can_attempt": True, "reason": "Can start exam"}
 
+
+    @action(detail=False, methods=["post"])
+    def get_chapter_questions(self, request):
+        """Get questions for selected chapters during exam creation."""
+        chapter_ids = request.data.get('chapter_ids', [])
+        
+        if not chapter_ids:
+            return Response(
+                {"success": False, "error": "Chapter IDs are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        from apps.questions.models import Question
+        from apps.questions.serializers import QuestionListSerializer
+        
+        # Get questions grouped by chapter
+        chapters_questions = {}
+        for chapter_id in chapter_ids:
+            questions = Question.objects.filter(
+                chapter_id=chapter_id,
+                is_active=True
+            ).select_related('chapter').prefetch_related('options')
+            
+            serialized_questions = QuestionListSerializer(questions, many=True).data
+            chapters_questions[chapter_id] = {
+                'questions': serialized_questions,
+                'count': len(serialized_questions)
+            }
+        
+        return Response({
+            "success": True,
+            "chapters_questions": chapters_questions
+        })
+
+    @action(detail=False, methods=["post"])
+    def validate_question_selection(self, request):
+        """Validate question selection before exam creation."""
+        data = request.data
+        
+        question_selection_method = data.get('question_selection_method', 'random')
+        selected_questions = data.get('selected_questions', [])
+        new_questions = data.get('new_questions', [])
+        total_questions = data.get('total_questions', 0)
+        chapters = data.get('chapters', [])
+        
+        validation_result = {
+            'is_valid': True,
+            'errors': [],
+            'warnings': [],
+            'summary': {}
+        }
+        
+        if question_selection_method == 'manual':
+            total_available = len(selected_questions) + len(new_questions)
+            validation_result['summary'] = {
+                'selected_existing': len(selected_questions),
+                'new_questions': len(new_questions),
+                'total_available': total_available,
+                'required': total_questions
+            }
+            
+            if total_available < total_questions:
+                validation_result['is_valid'] = False
+                validation_result['errors'].append(
+                    f"Need {total_questions - total_available} more questions"
+                )
+            elif total_available > total_questions:
+                validation_result['warnings'].append(
+                    f"You have {total_available - total_questions} extra questions. "
+                    f"Only first {total_questions} will be used."
+                )
+        
+        elif question_selection_method == 'mixed':
+            random_count = data.get('random_questions_count', 0)
+            manual_count = len(selected_questions) + len(new_questions)
+            
+            validation_result['summary'] = {
+                'manual_questions': manual_count,
+                'random_questions': random_count,
+                'total_planned': manual_count + random_count,
+                'required': total_questions
+            }
+            
+            if (manual_count + random_count) != total_questions:
+                validation_result['is_valid'] = False
+                validation_result['errors'].append(
+                    "Manual questions + random questions must equal total questions"
+                )
+        
+        elif question_selection_method == 'random':
+            # Check if enough questions available in chapters
+            from apps.questions.models import Question
+            available_questions = Question.objects.filter(
+                chapter_id__in=chapters,
+                is_active=True
+            ).count()
+            
+            validation_result['summary'] = {
+                'available_in_chapters': available_questions,
+                'required': total_questions
+            }
+            
+            if available_questions < total_questions:
+                validation_result['is_valid'] = False
+                validation_result['errors'].append(
+                    f"Only {available_questions} questions available in selected chapters. "
+                    f"Need {total_questions - available_questions} more questions."
+                )
+        
+        return Response({
+            "success": True,
+            "validation": validation_result
+        })
+
+    @action(detail=True, methods=["get"])
+    def preview_questions(self, request, pk=None):
+        """Preview questions that will be used in the exam."""
+        exam = self.get_object()
+        
+        if not request.user.is_teacher_or_above:
+            return Response(
+                {"success": False, "error": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get questions based on selection method
+        questions = exam.get_questions(request.user)
+        
+        from apps.questions.serializers import QuestionDetailSerializer
+        serializer = QuestionDetailSerializer(questions, many=True)
+        
+        return Response({
+            "success": True,
+            "questions": serializer.data,
+            "total": len(questions),
+            "selection_method": exam.question_selection_method
+        })
+    
+    
     @action(detail=True, methods=["post"])
     @require_subscription
     def start_exam(self, request, pk=None):

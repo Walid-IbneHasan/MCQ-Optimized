@@ -2,10 +2,13 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
+from django.db import transaction
 from .models import Exam, ExamSession, ExamAnswer, ExamQuestion
 from apps.subjects.serializers import ChapterSerializer
 from apps.questions.serializers import QuestionListSerializer, QuestionOptionSerializer
 from apps.questions.models import Question, QuestionOption
+from apps.questions.serializers import QuestionListSerializer, QuestionCreateSerializer
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -70,15 +73,39 @@ class ExamDetailSerializer(ExamListSerializer):
             "chapters",
             "questions_per_chapter",
             "difficulty_distribution",
+            "question_selection_method",
+            "selected_questions",
+            "random_questions_count",
+            "randomize_questions",
+            "randomize_options",
+            "time_per_question",
+            "allow_custom_duration",
+            "max_duration_minutes",
+            "auto_submit_on_time_up",
+            "grace_period_seconds",
         ]
 
 
-class ExamCreateSerializer(serializers.ModelSerializer):
+class ExamQuestionSelectionSerializer(serializers.Serializer):
     """
-    Serializer for creating exams.
+    Serializer for exam question selection data.
     """
 
+    chapter_id = serializers.UUIDField()
+    questions = QuestionListSerializer(many=True, read_only=True)
+
+
+class ExamCreateSerializer(serializers.ModelSerializer):
     chapters = serializers.ListField(child=serializers.UUIDField(), write_only=True)
+    question_selection_method = serializers.CharField(required=False, default="random")
+    selected_questions = serializers.ListField(required=False, default=list)
+    random_questions_count = serializers.IntegerField(required=False, default=0)
+    new_questions = serializers.ListField(
+        child=QuestionCreateSerializer(),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
 
     class Meta:
         model = Exam
@@ -87,6 +114,10 @@ class ExamCreateSerializer(serializers.ModelSerializer):
             "description",
             "exam_type",
             "chapters",
+            "question_selection_method",
+            "selected_questions",
+            "random_questions_count",
+            "new_questions",
             "total_questions",
             "duration_minutes",
             "time_per_question",
@@ -108,60 +139,101 @@ class ExamCreateSerializer(serializers.ModelSerializer):
             "grace_period_seconds",
         ]
 
-    def validate_chapters(self, value):
-        """Validate chapters exist and are active."""
-        from apps.subjects.models import Chapter
-
-        if len(value) == 0:
-            raise serializers.ValidationError("At least one chapter is required.")
-
-        chapters = Chapter.objects.filter(id__in=value, is_active=True)
-        if len(chapters) != len(value):
-            raise serializers.ValidationError(
-                "One or more chapters are invalid or inactive."
-            )
-
-        return value
-
     def validate(self, attrs):
-        """Validate exam configuration."""
-        # Validate scheduled exam dates
-        if attrs.get("exam_type") == "scheduled":
-            start_date = attrs.get("scheduled_start")
-            end_date = attrs.get("scheduled_end")
+        attrs = super().validate(attrs)
+        method = attrs.get("question_selection_method", "random")
+        selected = attrs.get("selected_questions", []) or []
+        new_qs = attrs.get("new_questions", []) or []
+        total = attrs.get("total_questions")
 
-            if not start_date or not end_date:
+        if method == "manual":
+            total_available = len(selected) + len(new_qs)
+            if total_available < total:
                 raise serializers.ValidationError(
-                    "Scheduled exams must have start and end dates."
+                    f"For manual selection, you need at least {total} questions. "
+                    f"Currently have {total_available} questions selected."
                 )
 
-            if start_date >= end_date:
-                raise serializers.ValidationError("End date must be after start date.")
-
-            if start_date <= timezone.now():
-                raise serializers.ValidationError("Start date must be in the future.")
-
-        # Validate duration settings
-        if attrs.get("allow_custom_duration") and not attrs.get("max_duration_minutes"):
-            attrs["max_duration_minutes"] = attrs.get("duration_minutes", 50) * 2
-
+        elif method == "mixed":
+            rand = attrs.get("random_questions_count", 0) or 0
+            manual_count = len(selected) + len(new_qs)
+            if (rand + manual_count) != total:
+                raise serializers.ValidationError(
+                    f"For mixed selection, random questions ({rand}) + "
+                    f"manual questions ({manual_count}) must equal total questions ({total})."
+                )
         return attrs
 
+    def _summarize_questions(self, ids):
+        """
+        Build questions_per_chapter & difficulty_distribution from a list of question IDs.
+        Returns (qpc, diff_pct)
+        """
+        if not ids:
+            return {}, {}
+
+        qs = Question.objects.filter(id__in=ids).only("id", "chapter_id", "difficulty")
+        qpc = {}
+        diff = {"easy": 0, "medium": 0, "hard": 0}
+        for q in qs:
+            cid = str(q.chapter_id)
+            qpc[cid] = qpc.get(cid, 0) + 1
+            if q.difficulty in diff:
+                diff[q.difficulty] += 1
+
+        total = sum(diff.values()) or 1
+        diff_pct = {k: round(v * 100.0 / total, 2) for k, v in diff.items()}
+        return qpc, diff_pct
+
     def create(self, validated_data):
-        """Create exam with chapters."""
         chapters_data = validated_data.pop("chapters")
+        selected_questions = validated_data.pop("selected_questions", []) or []
+        new_questions_data = validated_data.pop("new_questions", []) or []
+
         validated_data["created_by"] = self.context["request"].user
 
-        exam = Exam.objects.create(**validated_data)
+        with transaction.atomic():
+            # 1) Create the exam shell
+            exam = Exam.objects.create(**validated_data)
 
-        # Add chapters
-        from apps.subjects.models import Chapter
+            # 2) Attach chapters
+            from apps.subjects.models import Chapter
 
-        chapters = Chapter.objects.filter(id__in=chapters_data)
-        exam.chapters.set(chapters)
+            exam.chapters.set(Chapter.objects.filter(id__in=chapters_data))
 
-        logger.info(f"Exam created by {exam.created_by.phone_number}: {exam.id}")
-        return exam
+            # 3) Create any NEW questions and collect their IDs
+            created_ids = []
+            for qd in new_questions_data:
+                # default chapter to first selected if none provided
+                if not qd.get("chapter"):
+                    first_ch = exam.chapters.first()
+                    if first_ch:
+                        qd["chapter"] = first_ch.id
+                ser = QuestionCreateSerializer(data=qd, context=self.context)
+                ser.is_valid(raise_exception=True)
+                q = ser.save()
+                created_ids.append(str(q.id))
+
+            # 4) Persist full selection (existing + newly created)
+            all_selected = [*selected_questions, *created_ids]
+            exam.selected_questions = all_selected
+
+            # 5) Compute admin-friendly caches (from manual portion)
+            if exam.question_selection_method in ("manual", "mixed"):
+                qpc, diff = self._summarize_questions(all_selected)
+                exam.questions_per_chapter = qpc
+                exam.difficulty_distribution = diff
+
+            exam.save(
+                update_fields=[
+                    "selected_questions",
+                    "questions_per_chapter",
+                    "difficulty_distribution",
+                ]
+            )
+
+            logger.info(f"Exam created by {exam.created_by.phone_number}: {exam.id}")
+            return exam
 
 
 class ExamSessionSerializer(serializers.ModelSerializer):

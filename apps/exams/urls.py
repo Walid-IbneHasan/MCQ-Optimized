@@ -59,4 +59,19 @@ urlpatterns = [
         ExamSubmissionView.as_view(),
         name="session-submit",
     ),
+    path(
+        "exams/get_chapter_questions/",
+        ExamViewSet.as_view({"post": "get_chapter_questions"}),
+        name="get-chapter-questions",
+    ),
+    path(
+        "exams/validate_question_selection/",
+        ExamViewSet.as_view({"post": "validate_question_selection"}),
+        name="validate-question-selection",
+    ),
+    path(
+        "exams/<uuid:pk>/preview_questions/",
+        ExamViewSet.as_view({"get": "preview_questions"}),
+        name="preview-exam-questions",
+    ),
 ]

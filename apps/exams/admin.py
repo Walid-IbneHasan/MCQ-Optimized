@@ -3,6 +3,8 @@ from django.utils.html import format_html
 from django.urls import reverse
 from django.utils import timezone
 from django.db.models import Count, Avg, Q
+from apps.subjects.models import Chapter
+from apps.questions.models import Question
 from .models import Exam, ExamSession, ExamAnswer, ExamQuestion
 
 
@@ -30,8 +32,6 @@ class ExamSessionInline(admin.TabularInline):
 
 @admin.register(Exam)
 class ExamAdmin(admin.ModelAdmin):
-    """Admin for Exam model."""
-
     list_display = [
         "title",
         "exam_type",
@@ -40,7 +40,7 @@ class ExamAdmin(admin.ModelAdmin):
         "is_active",
         "is_public",
         "requires_subscription",
-        "total_attempts",
+        "selected_questions_count",
         "average_score_display",
         "created_by",
         "created_at",
@@ -54,6 +54,7 @@ class ExamAdmin(admin.ModelAdmin):
         "negative_marking_enabled",
         "created_at",
         "created_by__role",
+        "question_selection_method",
     ]
 
     search_fields = [
@@ -73,6 +74,9 @@ class ExamAdmin(admin.ModelAdmin):
         "exam_status_display",
         "can_start_now",
         "is_scheduled_active",
+        "selected_questions_display",
+        "questions_per_chapter_pretty",
+        "difficulty_distribution_pretty",
     ]
 
     fieldsets = (
@@ -81,12 +85,22 @@ class ExamAdmin(admin.ModelAdmin):
             {"fields": ("id", "title", "description", "created_by", "exam_type")},
         ),
         (
+            "Question Selection",
+            {
+                "fields": (
+                    "question_selection_method",
+                    "selected_questions_display",
+                    "random_questions_count",
+                )
+            },
+        ),
+        (
             "Exam Configuration",
             {
                 "fields": (
                     "total_questions",
-                    "questions_per_chapter",
-                    "difficulty_distribution",
+                    "questions_per_chapter_pretty",
+                    "difficulty_distribution_pretty",
                     "randomize_questions",
                     "randomize_options",
                 )
@@ -151,9 +165,7 @@ class ExamAdmin(admin.ModelAdmin):
     )
 
     filter_horizontal = ("chapters",)
-
     date_hierarchy = "created_at"
-
     actions = [
         "activate_exams",
         "deactivate_exams",
@@ -162,83 +174,122 @@ class ExamAdmin(admin.ModelAdmin):
         "export_exam_data",
     ]
 
+    # ===== Pretty helpers =====
+
+    def selected_questions_count(self, obj):
+        return len(obj.selected_questions or [])
+
+    selected_questions_count.short_description = "Selected Qs"
+
+    def selected_questions_display(self, obj):
+        """Clickable list (first 20) of selected questions."""
+        ids = obj.selected_questions or []
+        if not ids:
+            return format_html('<span style="color: #888;">— none —</span>')
+        qs = Question.objects.filter(id__in=ids)
+        qmap = {str(q.id): q for q in qs}
+        items = []
+        for qid in ids[:20]:
+            q = qmap.get(qid)
+            if not q:
+                continue
+            url = reverse("admin:questions_question_change", args=[q.id])
+            items.append(f'<li><a href="{url}">{q.question_text[:80]}</a></li>')
+        if len(ids) > 20:
+            items.append(f"<li>... and {len(ids) - 20} more</li>")
+        return format_html('<ul style="margin-left:1rem;">{}</ul>', "".join(items))
+
+    selected_questions_display.short_description = "Selected Questions"
+
+    def questions_per_chapter_pretty(self, obj):
+        """Show chapter names instead of raw IDs."""
+        if not obj.questions_per_chapter:
+            return format_html('<span style="color: #888;">{}</span>', "{}")
+        parts = []
+        for cid, count in obj.questions_per_chapter.items():
+            try:
+                ch = Chapter.objects.get(id=cid)
+                parts.append(
+                    f'"{ch.subject.name} - Ch {ch.chapter_number}: {ch.name}": {count}'
+                )
+            except Chapter.DoesNotExist:
+                parts.append(f'"{cid}": {count}')
+        return format_html("<code>{}</code>", "{ " + ", ".join(parts) + " }")
+
+    questions_per_chapter_pretty.short_description = "Questions per chapter"
+
+    def difficulty_distribution_pretty(self, obj):
+        if not obj.difficulty_distribution:
+            return format_html('<span style="color: #888;">{}</span>', "{}")
+        diff = obj.difficulty_distribution
+        pretty = f'{{ easy: {diff.get("easy",0)}%, medium: {diff.get("medium",0)}%, hard: {diff.get("hard",0)}% }}'
+        return format_html("<code>{}</code>", pretty)
+
+    difficulty_distribution_pretty.short_description = "Difficulty distribution"
+
+    # ===== Existing helpers =====
+
     def average_score_display(self, obj):
-        """Display average score with color coding."""
-        # Coerce to float safely; handle None/invalid
         try:
-            score_val = (
-                float(obj.average_score) if obj.average_score is not None else 0.0
-            )
+            score_val = float(obj.average_score) if obj.average_score is not None else 0.0
         except (TypeError, ValueError):
             score_val = 0.0
 
-        if score_val >= 80:
-            color = "green"
-        elif score_val >= 60:
-            color = "orange"
-        else:
-            color = "red"
+        color = "green" if score_val >= 80 else ("orange" if score_val >= 60 else "red")
+        score_str = f"{score_val:.2f}%"  # pre-format BEFORE format_html
 
-        score_str = f"{score_val:.2f}%"  # pre-format as string
         return format_html('<span style="color: {};">{}</span>', color, score_str)
 
     average_score_display.short_description = "Avg Score"
-    # (optional) let admins sort by the underlying numeric field:
     average_score_display.admin_order_field = "average_score"
 
+
     def exam_status_display(self, obj):
-        """Display exam status."""
         if obj.exam_type == "scheduled":
             if obj.is_scheduled_active:
                 return format_html('<span style="color: green;">🟢 Active</span>')
             elif obj.scheduled_start and obj.scheduled_start > timezone.now():
                 return format_html('<span style="color: orange;">⏰ Upcoming</span>')
-            else:
-                return format_html('<span style="color: red;">🔴 Ended</span>')
-        else:
-            if obj.is_active:
-                return format_html('<span style="color: green;">✓ Active</span>')
-            else:
-                return format_html('<span style="color: red;">✗ Inactive</span>')
+            return format_html('<span style="color: red;">🔴 Ended</span>')
+        return format_html(
+            '<span style="color: {};">{}</span>',
+            "green" if obj.is_active else "red",
+            "✓ Active" if obj.is_active else "✗ Inactive",
+        )
 
     exam_status_display.short_description = "Status"
 
+    # actions (unchanged)
     def activate_exams(self, request, queryset):
-        """Activate selected exams."""
         updated = queryset.update(is_active=True)
         self.message_user(request, f"{updated} exams activated.")
 
     activate_exams.short_description = "Activate selected exams"
 
     def deactivate_exams(self, request, queryset):
-        """Deactivate selected exams."""
         updated = queryset.update(is_active=False)
         self.message_user(request, f"{updated} exams deactivated.")
 
     deactivate_exams.short_description = "Deactivate selected exams"
 
     def make_public(self, request, queryset):
-        """Make exams public."""
         updated = queryset.update(is_public=True)
         self.message_user(request, f"{updated} exams made public.")
 
     make_public.short_description = "Make public"
 
     def make_private(self, request, queryset):
-        """Make exams private."""
         updated = queryset.update(is_public=False)
         self.message_user(request, f"{updated} exams made private.")
 
     make_private.short_description = "Make private"
 
     def export_exam_data(self, request, queryset):
-        """Export exam data to CSV."""
         import csv
         from django.http import HttpResponse
 
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="exams.csv"'
-
         writer = csv.writer(response)
         writer.writerow(
             [
@@ -253,14 +304,12 @@ class ExamAdmin(admin.ModelAdmin):
                 "Created At",
             ]
         )
-
         for exam in queryset:
             sessions = ExamSession.objects.filter(exam=exam)
             pass_rate = 0
             if sessions.exists():
                 passed = sessions.filter(is_passed=True).count()
                 pass_rate = (passed / sessions.count()) * 100
-
             writer.writerow(
                 [
                     exam.title,
@@ -274,16 +323,13 @@ class ExamAdmin(admin.ModelAdmin):
                     exam.created_at.strftime("%Y-%m-%d %H:%M"),
                 ]
             )
-
         return response
 
     export_exam_data.short_description = "Export to CSV"
 
     def get_queryset(self, request):
-        """Override queryset to add annotations."""
         qs = super().get_queryset(request)
-        qs = qs.annotate(session_count=Count("sessions", distinct=True))
-        return qs
+        return qs.annotate(session_count=Count("sessions", distinct=True))
 
 
 @admin.register(ExamSession)

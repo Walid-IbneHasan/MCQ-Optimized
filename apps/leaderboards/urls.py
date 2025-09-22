@@ -1,3 +1,4 @@
+# apps/leaderboards/urls.py - Enhanced URLs
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -5,6 +6,12 @@ from .views import (
     LeaderboardViewSet,
     LeaderboardSubscriptionViewSet,
     UserLeaderboardSummaryViewSet,
+)
+from .api import (
+    get_exam_leaderboards,
+    get_leaderboard_detail,
+    get_user_leaderboard_summary,
+    get_available_periods,
 )
 
 router = DefaultRouter()
@@ -20,5 +27,15 @@ router.register(
 )
 
 urlpatterns = [
+    # Router URLs
     path("", include(router.urls)),
+    # Enhanced API endpoints
+    path("exam-leaderboards/", get_exam_leaderboards, name="exam-leaderboards"),
+    path(
+        "leaderboards/<uuid:leaderboard_id>/detail/",
+        get_leaderboard_detail,
+        name="leaderboard-detail",
+    ),
+    path("my-summary/", get_user_leaderboard_summary, name="user-leaderboard-summary"),
+    path("available-periods/", get_available_periods, name="available-periods"),
 ]

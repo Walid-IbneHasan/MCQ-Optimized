@@ -19,7 +19,8 @@ class ExamResultSerializer(serializers.ModelSerializer):
     """
 
     exam_detail = ExamListSerializer(source="exam", read_only=True)
-    user_name = serializers.CharField(source="user.full_name", read_only=True)
+    # CORRECTED: Changed source from "user.full_name" to "user.get_full_name"
+    user_name = serializers.CharField(source="user.get_full_name", read_only=True)
     performance_rating = serializers.ReadOnlyField()
 
     class Meta:
@@ -33,7 +34,7 @@ class ExamResultSerializer(serializers.ModelSerializer):
             "questions_attempted",
             "correct_answers",
             "wrong_answers",
-            "unanswered",
+            "unanswered_questions",
             "total_marks",
             "marks_obtained",
             "negative_marks",
@@ -42,6 +43,7 @@ class ExamResultSerializer(serializers.ModelSerializer):
             "grade",
             "rank",
             "time_taken_minutes",
+            "time_taken_seconds",
             "average_time_per_question",
             "accuracy_rate",
             "performance_rating",
@@ -78,7 +80,8 @@ class UserPerformanceAnalyticsSerializer(serializers.ModelSerializer):
     Serializer for user performance analytics.
     """
 
-    user_name = serializers.CharField(source="user.full_name", read_only=True)
+    # CORRECTED: Changed source from "user.full_name" to "user.get_full_name"
+    user_name = serializers.CharField(source="user.get_full_name", read_only=True)
     pass_rate = serializers.SerializerMethodField()
 
     class Meta:
@@ -122,7 +125,8 @@ class SubjectPerformanceSerializer(serializers.ModelSerializer):
     """
 
     subject_detail = SubjectSerializer(source="subject", read_only=True)
-    user_name = serializers.CharField(source="user.full_name", read_only=True)
+    # CORRECTED: Changed source from "user.full_name" to "user.get_full_name"
+    user_name = serializers.CharField(source="user.get_full_name", read_only=True)
     pass_rate = serializers.SerializerMethodField()
 
     class Meta:
@@ -255,7 +259,8 @@ class UserDashboardSerializer(serializers.Serializer):
         user = obj["user"]
         return {
             "phone_number": user.phone_number,
-            "full_name": user.full_name,
+            # CORRECTED: Called the get_full_name() method
+            "full_name": user.get_full_name(),
             "role": user.role,
             "join_date": user.created_at,
             "is_verified": user.is_verified,
@@ -297,7 +302,7 @@ class UserDashboardSerializer(serializers.Serializer):
         results = obj.get("recent_results", [])
         chart_data = []
 
-        for result in results[-10:]:  # Last 10 results
+        for result in results:
             chart_data.append(
                 {
                     "date": result.created_at.date().isoformat(),

@@ -9,6 +9,11 @@ from .views import (
     ExamSubmissionView,
     ExamProgressView,
 )
+from .analytics_views import (
+    ExamAnalyticsView,
+    UserExamDetailView,
+    ExamComparisonView,
+)
 
 app_name = "exams"
 
@@ -73,5 +78,31 @@ urlpatterns = [
         "exams/<uuid:pk>/preview_questions/",
         ExamViewSet.as_view({"get": "preview_questions"}),
         name="preview-exam-questions",
+    ),
+    path(
+        "sessions/<uuid:pk>/bulk_submit_answers/",
+        ExamSessionViewSet.as_view({"post": "bulk_submit_answers"}),
+        name="bulk-submit-answers",
+    ),
+    # Analytics endpoints (Teachers/Admins only)
+    path(
+        "exams/<uuid:exam_id>/analytics/",
+        ExamAnalyticsView.as_view(),
+        name="exam-analytics",
+    ),
+    path(
+        "exams/<uuid:exam_id>/participants/<uuid:user_id>/",
+        UserExamDetailView.as_view(),
+        name="user-exam-detail",
+    ),
+    path(
+        "exams/<uuid:exam_id>/compare/",
+        ExamComparisonView.as_view(),
+        name="exam-comparison",
+    ),
+    path(
+        "exams/<uuid:pk>/detailed_analytics/",
+        ExamViewSet.as_view({"get": "detailed_analytics"}),
+        name="exam-detailed-analytics",
     ),
 ]

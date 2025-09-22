@@ -80,7 +80,7 @@ class ExamResultAdmin(admin.ModelAdmin):
                     "questions_attempted",
                     "correct_answers",
                     "wrong_answers",
-                    "unanswered",
+                    "unanswered_questions",
                 )
             },
         ),
@@ -100,6 +100,7 @@ class ExamResultAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "time_taken_minutes",
+                    "time_taken_seconds",
                     "average_time_per_question",
                     "accuracy_rate",
                     "performance_rating",

@@ -2,6 +2,7 @@ from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Avg, Count, StdDev, Q, F, Sum
+from django.db.models import Max, Min, Variance
 from datetime import timedelta, datetime
 from .models import (
     ExamResult,
@@ -843,7 +844,3 @@ def generate_exam_recommendations(analytics):
         )
 
     return recommendations
-
-
-# Import these at the top if not already imported
-from django.db.models import Max, Min, Variance

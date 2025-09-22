@@ -280,6 +280,28 @@ class ExamSessionSerializer(serializers.ModelSerializer):
         ]
 
 
+class BulkAnswerSubmissionSerializer(serializers.Serializer):
+    """
+    Serializer for bulk answer submission.
+    """
+
+    answers = serializers.ListField(
+        child=serializers.DictField(),
+        allow_empty=False,
+        help_text="List of answer objects with question_id, selected_option_id, and time_spent_seconds",
+    )
+
+    def validate_answers(self, value):
+        """Validate answer format."""
+        for answer in value:
+            if "question_id" not in answer:
+                raise serializers.ValidationError(
+                    "Each answer must include 'question_id'"
+                )
+            # selected_option_id can be None for unanswered questions
+        return value
+
+
 class ExamStartSerializer(serializers.Serializer):
     """
     Serializer for starting an exam.

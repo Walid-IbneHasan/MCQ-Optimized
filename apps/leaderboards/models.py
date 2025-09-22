@@ -1,3 +1,4 @@
+# apps/leaderboards/models.py - Enhanced with additional periods
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -25,7 +26,9 @@ class LeaderboardType(BaseModel):
     LEADERBOARD_PERIODS = [
         ("all_time", "All Time"),
         ("yearly", "Yearly"),
+        ("quarterly", "Quarterly"),
         ("monthly", "Monthly"),
+        ("biweekly", "Bi-weekly"),  # Added
         ("weekly", "Weekly"),
         ("daily", "Daily"),
     ]
@@ -39,6 +42,21 @@ class LeaderboardType(BaseModel):
     is_active = models.BooleanField(default=True)
     is_public = models.BooleanField(default=True)
     max_entries = models.PositiveIntegerField(default=100)
+    is_default = models.BooleanField(
+        default=False
+    )  # Added to mark default scheduled exam leaderboards
+
+    # Filtering criteria
+    exam_type_filter = models.CharField(
+        max_length=20,
+        choices=[
+            ("all", "All Types"),
+            ("scheduled", "Scheduled Only"),
+            ("practice", "Practice Only"),
+            ("self_paced", "Self Paced Only"),
+        ],
+        default="all",
+    )  # Added for exam type filtering
 
     # Scoring configuration
     score_calculation_method = models.CharField(
@@ -49,7 +67,7 @@ class LeaderboardType(BaseModel):
             ("total", "Total Points"),
             ("weighted", "Weighted Score"),
         ],
-        default="average",
+        default="best",  # Changed default to "best" for exam leaderboards
     )
 
     # Filtering criteria
@@ -59,14 +77,36 @@ class LeaderboardType(BaseModel):
 
     class Meta:
         db_table = "leaderboard_types"
-        unique_together = ["scope", "period", "name"]
+        unique_together = ["scope", "period", "name", "exam_type_filter"]
         indexes = [
             models.Index(fields=["scope", "period"]),
             models.Index(fields=["is_active", "is_public"]),
+            models.Index(fields=["is_default", "exam_type_filter"]),
         ]
 
     def __str__(self):
         return f"{self.name} ({self.get_scope_display()} - {self.get_period_display()})"
+
+    @classmethod
+    def get_default_scheduled_leaderboard_type(cls, period="weekly"):
+        """Get the default scheduled exam leaderboard type for a period."""
+        return cls.objects.filter(
+            scope="exam",
+            period=period,
+            exam_type_filter="scheduled",
+            is_default=True,
+            is_active=True,
+        ).first()
+
+    @classmethod
+    def get_practice_leaderboard_type(cls, period="weekly"):
+        """Get practice exam leaderboard type for a period."""
+        return cls.objects.filter(
+            scope="exam",
+            period=period,
+            exam_type_filter="practice",
+            is_active=True,
+        ).first()
 
 
 class Leaderboard(BaseModel):
@@ -109,6 +149,7 @@ class Leaderboard(BaseModel):
             models.Index(fields=["subject", "period_start"]),
             models.Index(fields=["chapter", "period_start"]),
             models.Index(fields=["exam"]),
+            models.Index(fields=["is_finalized"]),
         ]
 
     def __str__(self):
@@ -134,6 +175,20 @@ class Leaderboard(BaseModel):
             if entry.get("user_id") == str(user.id):
                 return idx
         return None
+
+    @classmethod
+    def get_current_scheduled_leaderboard(cls, period="weekly"):
+        """Get current scheduled exam leaderboard for a period."""
+        now = timezone.now()
+        lb_type = LeaderboardType.get_default_scheduled_leaderboard_type(period)
+        if not lb_type:
+            return None
+
+        return cls.objects.filter(
+            leaderboard_type=lb_type,
+            period_start__lte=now,
+            period_end__gte=now,
+        ).first()
 
 
 class LeaderboardEntry(BaseModel):
@@ -197,7 +252,7 @@ class LeaderboardEntry(BaseModel):
         ]
 
     def __str__(self):
-        return f"#{self.rank} - {self.user.full_name} ({self.score})"
+        return f"#{self.rank} - {self.user.get_full_name()} ({self.score})"
 
     @property
     def accuracy_rate(self):
@@ -243,4 +298,4 @@ class LeaderboardSubscription(BaseModel):
         unique_together = ["user", "leaderboard_type", "subject", "chapter"]
 
     def __str__(self):
-        return f"{self.user.full_name} - {self.leaderboard_type.name}"
+        return f"{self.user.get_full_name()} - {self.leaderboard_type.name}"

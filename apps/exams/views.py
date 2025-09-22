@@ -8,7 +8,10 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q, Count, Avg
+
+from apps.questions.models import Question, QuestionOption
 from .models import Exam, ExamSession, ExamAnswer, ExamQuestion
+from apps.results.models import ExamResult
 from .serializers import (
     ExamListSerializer,
     ExamDetailSerializer,
@@ -38,6 +41,30 @@ from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+
+def calculate_grade(percentage_score):
+    """Calculate grade based on percentage score."""
+    if percentage_score >= 90:
+        return "A+"
+    elif percentage_score >= 85:
+        return "A"
+    elif percentage_score >= 80:
+        return "A-"
+    elif percentage_score >= 75:
+        return "B+"
+    elif percentage_score >= 70:
+        return "B"
+    elif percentage_score >= 65:
+        return "B-"
+    elif percentage_score >= 60:
+        return "C+"
+    elif percentage_score >= 55:
+        return "C"
+    elif percentage_score >= 50:
+        return "C-"
+    else:
+        return "F"
 
 
 @extend_schema_view(
@@ -448,145 +475,141 @@ class ExamViewSet(BaseViewSet):
 
         return {"can_attempt": True, "reason": "Can start exam"}
 
-
     @action(detail=False, methods=["post"])
     def get_chapter_questions(self, request):
         """Get questions for selected chapters during exam creation."""
-        chapter_ids = request.data.get('chapter_ids', [])
-        
+        chapter_ids = request.data.get("chapter_ids", [])
+
         if not chapter_ids:
             return Response(
                 {"success": False, "error": "Chapter IDs are required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         from apps.questions.models import Question
         from apps.questions.serializers import QuestionListSerializer
-        
+
         # Get questions grouped by chapter
         chapters_questions = {}
         for chapter_id in chapter_ids:
-            questions = Question.objects.filter(
-                chapter_id=chapter_id,
-                is_active=True
-            ).select_related('chapter').prefetch_related('options')
-            
+            questions = (
+                Question.objects.filter(chapter_id=chapter_id, is_active=True)
+                .select_related("chapter")
+                .prefetch_related("options")
+            )
+
             serialized_questions = QuestionListSerializer(questions, many=True).data
             chapters_questions[chapter_id] = {
-                'questions': serialized_questions,
-                'count': len(serialized_questions)
+                "questions": serialized_questions,
+                "count": len(serialized_questions),
             }
-        
-        return Response({
-            "success": True,
-            "chapters_questions": chapters_questions
-        })
+
+        return Response({"success": True, "chapters_questions": chapters_questions})
 
     @action(detail=False, methods=["post"])
     def validate_question_selection(self, request):
         """Validate question selection before exam creation."""
         data = request.data
-        
-        question_selection_method = data.get('question_selection_method', 'random')
-        selected_questions = data.get('selected_questions', [])
-        new_questions = data.get('new_questions', [])
-        total_questions = data.get('total_questions', 0)
-        chapters = data.get('chapters', [])
-        
+
+        question_selection_method = data.get("question_selection_method", "random")
+        selected_questions = data.get("selected_questions", [])
+        new_questions = data.get("new_questions", [])
+        total_questions = data.get("total_questions", 0)
+        chapters = data.get("chapters", [])
+
         validation_result = {
-            'is_valid': True,
-            'errors': [],
-            'warnings': [],
-            'summary': {}
+            "is_valid": True,
+            "errors": [],
+            "warnings": [],
+            "summary": {},
         }
-        
-        if question_selection_method == 'manual':
+
+        if question_selection_method == "manual":
             total_available = len(selected_questions) + len(new_questions)
-            validation_result['summary'] = {
-                'selected_existing': len(selected_questions),
-                'new_questions': len(new_questions),
-                'total_available': total_available,
-                'required': total_questions
+            validation_result["summary"] = {
+                "selected_existing": len(selected_questions),
+                "new_questions": len(new_questions),
+                "total_available": total_available,
+                "required": total_questions,
             }
-            
+
             if total_available < total_questions:
-                validation_result['is_valid'] = False
-                validation_result['errors'].append(
+                validation_result["is_valid"] = False
+                validation_result["errors"].append(
                     f"Need {total_questions - total_available} more questions"
                 )
             elif total_available > total_questions:
-                validation_result['warnings'].append(
+                validation_result["warnings"].append(
                     f"You have {total_available - total_questions} extra questions. "
                     f"Only first {total_questions} will be used."
                 )
-        
-        elif question_selection_method == 'mixed':
-            random_count = data.get('random_questions_count', 0)
+
+        elif question_selection_method == "mixed":
+            random_count = data.get("random_questions_count", 0)
             manual_count = len(selected_questions) + len(new_questions)
-            
-            validation_result['summary'] = {
-                'manual_questions': manual_count,
-                'random_questions': random_count,
-                'total_planned': manual_count + random_count,
-                'required': total_questions
+
+            validation_result["summary"] = {
+                "manual_questions": manual_count,
+                "random_questions": random_count,
+                "total_planned": manual_count + random_count,
+                "required": total_questions,
             }
-            
+
             if (manual_count + random_count) != total_questions:
-                validation_result['is_valid'] = False
-                validation_result['errors'].append(
+                validation_result["is_valid"] = False
+                validation_result["errors"].append(
                     "Manual questions + random questions must equal total questions"
                 )
-        
-        elif question_selection_method == 'random':
+
+        elif question_selection_method == "random":
             # Check if enough questions available in chapters
             from apps.questions.models import Question
+
             available_questions = Question.objects.filter(
-                chapter_id__in=chapters,
-                is_active=True
+                chapter_id__in=chapters, is_active=True
             ).count()
-            
-            validation_result['summary'] = {
-                'available_in_chapters': available_questions,
-                'required': total_questions
+
+            validation_result["summary"] = {
+                "available_in_chapters": available_questions,
+                "required": total_questions,
             }
-            
+
             if available_questions < total_questions:
-                validation_result['is_valid'] = False
-                validation_result['errors'].append(
+                validation_result["is_valid"] = False
+                validation_result["errors"].append(
                     f"Only {available_questions} questions available in selected chapters. "
                     f"Need {total_questions - available_questions} more questions."
                 )
-        
-        return Response({
-            "success": True,
-            "validation": validation_result
-        })
+
+        return Response({"success": True, "validation": validation_result})
 
     @action(detail=True, methods=["get"])
     def preview_questions(self, request, pk=None):
         """Preview questions that will be used in the exam."""
         exam = self.get_object()
-        
+
         if not request.user.is_teacher_or_above:
             return Response(
                 {"success": False, "error": "Permission denied"},
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
-        
+
         # Get questions based on selection method
         questions = exam.get_questions(request.user)
-        
+
         from apps.questions.serializers import QuestionDetailSerializer
+
         serializer = QuestionDetailSerializer(questions, many=True)
-        
-        return Response({
-            "success": True,
-            "questions": serializer.data,
-            "total": len(questions),
-            "selection_method": exam.question_selection_method
-        })
-    
-    
+
+        return Response(
+            {
+                "success": True,
+                "questions": serializer.data,
+                "total": len(questions),
+                "selection_method": exam.question_selection_method,
+            }
+        )
+
     @action(detail=True, methods=["post"])
     @require_subscription
     def start_exam(self, request, pk=None):
@@ -682,6 +705,307 @@ class ExamViewSet(BaseViewSet):
         return Response(
             {"success": False, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Add this method to ExamViewSet in apps/exams/views.py
+
+    @action(detail=True, methods=["get"])
+    def detailed_analytics(self, request, pk=None):
+        """Get comprehensive exam analytics for teachers."""
+        exam = self.get_object()
+
+        if not request.user.is_teacher_or_above:
+            return Response(
+                {"success": False, "error": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Get all results for this exam
+        results = (
+            ExamResult.objects.filter(exam=exam)
+            .select_related("user", "session")
+            .order_by("-percentage_score")
+        )
+
+        if not results.exists():
+            return Response(
+                {
+                    "success": True,
+                    "message": "No completed attempts found for this exam yet.",
+                    "analytics": None,
+                }
+            )
+
+        # Build comprehensive analytics
+        total_attempts = results.count()
+        passed_count = results.filter(is_passed=True).count()
+        avg_score = results.aggregate(avg=Avg("percentage_score"))["avg"] or 0
+        avg_time = results.aggregate(avg=Avg("time_taken_minutes"))["avg"] or 0
+
+        # Participant details with their performance
+        participants = []
+        for result in results:
+            # Get detailed answers for this result
+            answers = ExamAnswer.objects.filter(session=result.session).select_related(
+                "question", "selected_option"
+            )
+
+            # Get wrong answers with details
+            wrong_answers = []
+            for answer in answers.filter(
+                is_correct=False, selected_option__isnull=False
+            ):
+                correct_option = answer.question.options.filter(is_correct=True).first()
+                wrong_answers.append(
+                    {
+                        "question_id": str(answer.question.id),
+                        "question_text": (
+                            answer.question.question_text[:100] + "..."
+                            if len(answer.question.question_text) > 100
+                            else answer.question.question_text
+                        ),
+                        "selected_answer": (
+                            answer.selected_option.option_text
+                            if answer.selected_option
+                            else None
+                        ),
+                        "correct_answer": (
+                            correct_option.option_text if correct_option else None
+                        ),
+                        "chapter": answer.question.chapter.name,
+                        "subject": answer.question.chapter.subject.name,
+                        "difficulty": answer.question.difficulty,
+                        "marks_lost": answer.question.marks - answer.marks_awarded,
+                    }
+                )
+
+            # Get unanswered questions
+            unanswered = []
+            for answer in answers.filter(selected_option__isnull=True):
+                unanswered.append(
+                    {
+                        "question_id": str(answer.question.id),
+                        "question_text": (
+                            answer.question.question_text[:100] + "..."
+                            if len(answer.question.question_text) > 100
+                            else answer.question.question_text
+                        ),
+                        "chapter": answer.question.chapter.name,
+                        "subject": answer.question.chapter.subject.name,
+                        "difficulty": answer.question.difficulty,
+                        "marks_lost": answer.question.marks,
+                    }
+                )
+
+            participants.append(
+                {
+                    "user_id": str(result.user.id),
+                    "user_name": result.user.get_full_name(),
+                    "user_phone": result.user.phone_number,
+                    "score_percentage": result.percentage_score,
+                    "marks_obtained": result.marks_obtained,
+                    "total_marks": result.total_marks,
+                    "grade": result.grade,
+                    "rank": result.rank,
+                    "is_passed": result.is_passed,
+                    "time_taken_minutes": result.time_taken_minutes,
+                    "correct_answers": result.correct_answers,
+                    "wrong_answers_count": result.wrong_answers,
+                    "unanswered_count": result.unanswered_questions,
+                    "accuracy_rate": result.accuracy_rate,
+                    "subject_wise_scores": result.subject_wise_scores,
+                    "chapter_wise_scores": result.chapter_wise_scores,
+                    "weak_areas": result.weak_areas,
+                    "strong_areas": result.strong_areas,
+                    "wrong_answers_detail": wrong_answers,
+                    "unanswered_detail": unanswered,
+                    "attempt_date": result.created_at,
+                    "session_details": {
+                        "tab_switches": result.session.tab_switches,
+                        "duration_minutes": result.session.duration_minutes,
+                        "ip_address": result.session.ip_address,
+                        "started_at": result.session.started_at,
+                        "ended_at": result.session.ended_at,
+                    },
+                }
+            )
+
+        # Question-wise analysis
+        questions = exam.get_questions()
+        question_analytics = []
+
+        for idx, question in enumerate(questions, 1):
+            # Get all answers for this question across all attempts
+            answers = ExamAnswer.objects.filter(
+                session__exam=exam, question=question
+            ).select_related("selected_option")
+
+            total_answered = answers.filter(selected_option__isnull=False).count()
+            correct_count = answers.filter(is_correct=True).count()
+            wrong_count = answers.filter(
+                is_correct=False, selected_option__isnull=False
+            ).count()
+            unanswered_count = answers.filter(selected_option__isnull=True).count()
+
+            success_rate = (
+                (correct_count / total_answered * 100) if total_answered > 0 else 0
+            )
+            avg_time = answers.aggregate(avg=Avg("time_spent_seconds"))["avg"] or 0
+
+            # Option-wise breakdown
+            option_stats = {}
+            for option in question.options.all():
+                selections = answers.filter(selected_option=option).count()
+                option_stats[str(option.id)] = {
+                    "option_text": option.option_text,
+                    "is_correct": option.is_correct,
+                    "selections": selections,
+                    "percentage": (
+                        (selections / total_answered * 100) if total_answered > 0 else 0
+                    ),
+                }
+
+            question_analytics.append(
+                {
+                    "question_number": idx,
+                    "question_id": str(question.id),
+                    "question_text": question.question_text,
+                    "chapter": question.chapter.name,
+                    "subject": question.chapter.subject.name,
+                    "difficulty": question.difficulty,
+                    "marks": question.marks,
+                    "total_attempts": total_answered + unanswered_count,
+                    "answered": total_answered,
+                    "correct": correct_count,
+                    "wrong": wrong_count,
+                    "unanswered": unanswered_count,
+                    "success_rate": round(success_rate, 2),
+                    "average_time_spent": round(avg_time, 2),
+                    "option_breakdown": option_stats,
+                    "needs_review": success_rate < 30
+                    or success_rate > 95,  # Flag problematic questions
+                }
+            )
+
+        # Subject and chapter performance
+        subject_performance = {}
+        chapter_performance = {}
+
+        for result in results:
+            for subject, scores in result.subject_wise_scores.items():
+                if subject not in subject_performance:
+                    subject_performance[subject] = {
+                        "total_students": 0,
+                        "total_score": 0,
+                        "scores": [],
+                    }
+                subject_performance[subject]["total_students"] += 1
+                subject_performance[subject]["total_score"] += scores.get(
+                    "percentage", 0
+                )
+                subject_performance[subject]["scores"].append(
+                    scores.get("percentage", 0)
+                )
+
+            for chapter, scores in result.chapter_wise_scores.items():
+                if chapter not in chapter_performance:
+                    chapter_performance[chapter] = {
+                        "total_students": 0,
+                        "total_score": 0,
+                        "scores": [],
+                    }
+                chapter_performance[chapter]["total_students"] += 1
+                chapter_performance[chapter]["total_score"] += scores.get(
+                    "percentage", 0
+                )
+                chapter_performance[chapter]["scores"].append(
+                    scores.get("percentage", 0)
+                )
+
+        # Calculate averages and identify weak areas
+        for subject in subject_performance:
+            perf = subject_performance[subject]
+            perf["average_score"] = perf["total_score"] / perf["total_students"]
+            perf["min_score"] = min(perf["scores"])
+            perf["max_score"] = max(perf["scores"])
+            perf["is_weak"] = perf["average_score"] < 60
+
+        for chapter in chapter_performance:
+            perf = chapter_performance[chapter]
+            perf["average_score"] = perf["total_score"] / perf["total_students"]
+            perf["min_score"] = min(perf["scores"])
+            perf["max_score"] = max(perf["scores"])
+            perf["is_weak"] = perf["average_score"] < 60
+
+        # Summary statistics
+        summary = {
+            "exam_title": exam.title,
+            "total_attempts": total_attempts,
+            "unique_students": results.values("user").distinct().count(),
+            "pass_rate": (
+                (passed_count / total_attempts * 100) if total_attempts > 0 else 0
+            ),
+            "average_score": round(avg_score, 2),
+            "highest_score": (
+                results.first().percentage_score if results.exists() else 0
+            ),
+            "lowest_score": results.last().percentage_score if results.exists() else 0,
+            "average_time": round(avg_time, 2),
+            "total_questions": exam.total_questions,
+            "exam_duration": exam.duration_minutes,
+            "passing_percentage": exam.passing_percentage,
+            "created_at": exam.created_at,
+            "created_by": exam.created_by.get_full_name(),
+        }
+
+        # Recommendations for improvement
+        recommendations = []
+
+        if summary["pass_rate"] < 50:
+            recommendations.append(
+                {
+                    "type": "pass_rate",
+                    "priority": "high",
+                    "message": "Low pass rate suggests exam difficulty should be reviewed",
+                    "suggestion": "Consider adjusting question difficulty or passing criteria",
+                }
+            )
+
+        if summary["average_score"] < 50:
+            recommendations.append(
+                {
+                    "type": "difficulty",
+                    "priority": "high",
+                    "message": "Very low average score indicates exam may be too difficult",
+                    "suggestion": "Review question selection and difficulty distribution",
+                }
+            )
+
+        # Find questions that need review
+        problematic_questions = [q for q in question_analytics if q["needs_review"]]
+        if problematic_questions:
+            recommendations.append(
+                {
+                    "type": "questions",
+                    "priority": "medium",
+                    "message": f"{len(problematic_questions)} questions show unusual performance patterns",
+                    "suggestion": "Review questions with very high or very low success rates",
+                }
+            )
+
+        return Response(
+            {
+                "success": True,
+                "analytics": {
+                    "summary": summary,
+                    "participants": participants,
+                    "question_analytics": question_analytics,
+                    "subject_performance": subject_performance,
+                    "chapter_performance": chapter_performance,
+                    "recommendations": recommendations,
+                    "generated_at": timezone.now(),
+                },
+            }
         )
 
 
@@ -1013,7 +1337,7 @@ class ExamSessionViewSet(BaseViewSet):
 
     @action(detail=True, methods=["post"])
     def submit_exam(self, request, pk=None):
-        """Submit the exam session."""
+        """Submit the exam session and calculate results immediately."""
         session = self.get_object()
 
         if session.status in ["completed", "auto_submitted"]:
@@ -1022,28 +1346,261 @@ class ExamSessionViewSet(BaseViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Process any final answers
+        # Process any final answers if provided
         answers = request.data.get("answers", [])
-        for answer_data in answers:
-            question_id = answer_data.get("question_id")
-            selected_option_id = answer_data.get("selected_option_id")
+        if answers:
+            for answer_data in answers:
+                question_id = answer_data.get("question_id")
+                selected_option_id = answer_data.get("selected_option_id")
+                time_spent = answer_data.get("time_spent_seconds", 0)
 
-            if question_id:
-                ExamAnswer.objects.update_or_create(
-                    session=session,
-                    question_id=question_id,
-                    defaults={"selected_option_id": selected_option_id},
-                )
+                if question_id:
+                    ExamAnswer.objects.update_or_create(
+                        session=session,
+                        question_id=question_id,
+                        defaults={
+                            "selected_option_id": selected_option_id,
+                            "time_spent_seconds": time_spent,
+                            "answered_at": timezone.now(),
+                        },
+                    )
 
         # Submit the session
         session.submit_session(auto_submitted=False)
 
+        # IMPORTANT: Trigger score calculation immediately
+        try:
+            from .tasks import process_exam_submission
+
+            # Call the task synchronously for immediate results
+            # In production, you might want to use .delay() for async processing
+            result = process_exam_submission(session.id)
+
+            logger.info(f"Exam submitted and processed for session {session.id}")
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Exam submitted successfully",
+                    "session_id": str(session.id),
+                    "result": result if result and result.get("success") else None,
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error processing exam submission: {str(e)}")
+
+            # Even if processing fails, the exam is still submitted
+            return Response(
+                {
+                    "success": True,
+                    "message": "Exam submitted successfully (processing in background)",
+                    "session_id": str(session.id),
+                    "result": None,
+                }
+            )
+
+    # Also add this method to ensure the calculate_session_score_immediate function works properly
+    def calculate_session_score_immediate(session_id):
+        """
+        Calculate score immediately and return detailed results.
+        This is a synchronous version that should create ExamResult.
+        """
+        try:
+            from .tasks import calculate_session_score
+
+            # Call the task function directly (not as a Celery task)
+            # This ensures immediate execution and result creation
+            result = calculate_session_score(session_id)
+
+            if result and result.get("success"):
+                # Get the created ExamResult for detailed response
+                try:
+                    from apps.results.models import ExamResult
+
+                    exam_result = ExamResult.objects.get(session_id=session_id)
+
+                    return {
+                        "result_id": str(exam_result.id),
+                        "total_questions": exam_result.total_questions,
+                        "questions_attempted": exam_result.questions_attempted,
+                        "correct_answers": exam_result.correct_answers,
+                        "wrong_answers": exam_result.wrong_answers,
+                        "unanswered": exam_result.unanswered_questions,
+                        "total_marks": exam_result.total_marks,
+                        "marks_obtained": exam_result.marks_obtained,
+                        "negative_marks": exam_result.negative_marks,
+                        "percentage_score": round(exam_result.percentage_score, 2),
+                        "is_passed": exam_result.is_passed,
+                        "grade": exam_result.grade,
+                        "time_taken_minutes": exam_result.time_taken_minutes,
+                        "accuracy_rate": round(exam_result.accuracy_rate, 2),
+                        "subject_wise_scores": exam_result.subject_wise_scores,
+                        "chapter_wise_scores": exam_result.chapter_wise_scores,
+                        "rank": exam_result.rank,
+                    }
+                except ExamResult.DoesNotExist:
+                    logger.error(f"ExamResult not found for session {session_id}")
+                    return None
+            else:
+                logger.error(f"Score calculation failed for session {session_id}")
+                return None
+
+        except Exception as e:
+            logger.error(
+                f"Error calculating immediate score for session {session_id}: {str(e)}"
+            )
+            raise
+
+    @action(detail=True, methods=["post"])
+    def bulk_submit_answers(self, request, pk=None):
+        """
+        Bulk submit all answers for an exam session with immediate correctness evaluation.
+        """
+        session = self.get_object()
+
+        if session.user != request.user:
+            return Response(
+                {"success": False, "error": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if session.status not in ["in_progress", "paused"]:
+            return Response(
+                {"success": False, "error": "Session is not active"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        answers_data = request.data.get("answers", [])
+        if not answers_data:
+            return Response(
+                {"success": False, "error": "No answers provided"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        successful_submissions = 0
+        failed_submissions = 0
+        errors = []
+        answer_details = []
+
+        with transaction.atomic():
+            for answer_data in answers_data:
+                try:
+                    question_id = answer_data.get("question_id")
+                    selected_option_id = answer_data.get("selected_option_id")
+                    time_spent = answer_data.get("time_spent_seconds", 0)
+
+                    if not question_id:
+                        failed_submissions += 1
+                        errors.append("Missing question_id in answer data")
+                        continue
+
+                    # Fetch question (with subject/chapter for response details)
+                    try:
+                        question = Question.objects.select_related(
+                            "chapter__subject"
+                        ).get(id=question_id)
+                    except Question.DoesNotExist:
+                        failed_submissions += 1
+                        errors.append(f"Question not found: {question_id}")
+                        continue
+
+                    # Validate that the selected option (when provided) belongs to this question
+                    selected_option = None
+                    if selected_option_id:
+                        try:
+                            selected_option = QuestionOption.objects.get(
+                                id=selected_option_id, question_id=question_id
+                            )
+                        except QuestionOption.DoesNotExist:
+                            failed_submissions += 1
+                            errors.append(
+                                f"Selected option does not belong to question {question_id}"
+                            )
+                            continue
+
+                    # Upsert the answer
+                    answer, _ = ExamAnswer.objects.update_or_create(
+                        session=session,
+                        question_id=question_id,
+                        defaults={
+                            "selected_option_id": selected_option_id,
+                            "time_spent_seconds": time_spent,
+                            "answered_at": timezone.now(),
+                        },
+                    )
+
+                    # Compute correctness immediately for UI feedback
+                    if selected_option is not None:
+                        is_correct = bool(selected_option.is_correct)
+                        # Provisional marks: full marks for correct, 0 for wrong/unanswered.
+                        # Negative marking is applied at final submission scoring.
+                        marks_awarded = question.marks if is_correct else 0.0
+                        answer.is_correct = is_correct
+                        answer.marks_awarded = marks_awarded
+                    else:
+                        answer.is_correct = False
+                        answer.marks_awarded = 0.0
+
+                    answer.save(update_fields=["is_correct", "marks_awarded"])
+
+                    # Collect details for response
+                    answer_details.append(
+                        {
+                            "question_id": str(question_id),
+                            "question_text": question.question_text,
+                            "selected_option_id": (
+                                str(selected_option_id) if selected_option_id else None
+                            ),
+                            "selected_option_text": (
+                                selected_option.option_text if selected_option else None
+                            ),
+                            "chapter_name": question.chapter.name,
+                            "subject_name": question.chapter.subject.name,
+                            "time_spent_seconds": time_spent,
+                        }
+                    )
+
+                    successful_submissions += 1
+
+                except Exception as e:
+                    failed_submissions += 1
+                    errors.append(
+                        f"Error processing answer for question {question_id}: {str(e)}"
+                    )
+                    continue
+
+            # Update session progress
+            session.answers_submitted = ExamAnswer.objects.filter(
+                session=session, selected_option__isnull=False
+            ).count()
+            session.save(update_fields=["answers_submitted"])
+
+        logger.info(
+            f"Bulk answer submission for session {session.id}: "
+            f"{successful_submissions} successful, {failed_submissions} failed"
+        )
+
+        total_questions = session.exam.total_questions
+        answered_questions = session.answers_submitted
+        progress_percentage = (
+            (answered_questions / total_questions * 100) if total_questions > 0 else 0
+        )
+
         return Response(
             {
                 "success": True,
-                "message": "Exam submitted successfully",
-                "session_id": str(session.id),
-            }
+                "message": f"Processed {len(answers_data)} answers",
+                "successful_submissions": successful_submissions,
+                "failed_submissions": failed_submissions,
+                "errors": errors if failed_submissions > 0 else [],
+                "answer_details": answer_details,
+                "session_progress": {
+                    "total_questions": total_questions,
+                    "answered_questions": answered_questions,
+                    "progress_percentage": progress_percentage,
+                },
+            },
+            status=status.HTTP_200_OK,
         )
 
 
@@ -1101,7 +1658,7 @@ class ExamAnswerView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, session_id):
-        """Submit an answer for a question."""
+        """Submit an answer for a question (saves and sets is_correct immediately)."""
         session = get_object_or_404(ExamSession, id=session_id, user=request.user)
 
         if session.status != "in_progress":
@@ -1114,15 +1671,52 @@ class ExamAnswerView(APIView):
         selected_option_id = request.data.get("selected_option_id")
         time_spent = request.data.get("time_spent_seconds", 0)
 
+        if not question_id:
+            return Response(
+                {"success": False, "error": "question_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate that the selected option (when provided) belongs to the question
+        selected_option = None
+        if selected_option_id:
+            try:
+                selected_option = QuestionOption.objects.get(
+                    id=selected_option_id, question_id=question_id
+                )
+            except QuestionOption.DoesNotExist:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Selected option does not belong to the question",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         with transaction.atomic():
-            answer, created = ExamAnswer.objects.update_or_create(
+            answer, _ = ExamAnswer.objects.update_or_create(
                 session=session,
                 question_id=question_id,
                 defaults={
                     "selected_option_id": selected_option_id,
                     "time_spent_seconds": time_spent,
+                    "answered_at": timezone.now(),
                 },
             )
+
+            # Compute correctness immediately for UI
+            if selected_option is not None:
+                is_correct = bool(selected_option.is_correct)
+                # Provisional marks: full marks if correct, 0 if wrong/unanswered
+                # (negative marking applied at final scoring)
+                marks_awarded = answer.question.marks if is_correct else 0.0
+                answer.is_correct = is_correct
+                answer.marks_awarded = marks_awarded
+            else:
+                answer.is_correct = False
+                answer.marks_awarded = 0.0
+
+            answer.save(update_fields=["is_correct", "marks_awarded"])
 
             # Update session progress
             session.answers_submitted = ExamAnswer.objects.filter(
@@ -1130,7 +1724,7 @@ class ExamAnswerView(APIView):
             ).count()
             session.save(update_fields=["answers_submitted"])
 
-            # Cache the answer in Redis for quick access
+            # Optional: cache for quick reads
             cache_key = f"session:{session_id}:answer:{question_id}"
             redis_client.set(
                 cache_key,
@@ -1142,7 +1736,7 @@ class ExamAnswerView(APIView):
                         "time_spent": time_spent,
                     }
                 ),
-                ex=3600,  # 1 hour expiry
+                ex=3600,
             )
 
         return Response(
@@ -1154,18 +1748,18 @@ class ExamAnswerView(APIView):
         )
 
     def get(self, request, session_id, question_id=None):
-        """Get submitted answers."""
+        """Get submitted answers (all for session or a specific question)."""
         session = get_object_or_404(ExamSession, id=session_id, user=request.user)
 
         if question_id:
-            # Get specific answer
+            # Specific answer
             answer = get_object_or_404(
                 ExamAnswer, session=session, question_id=question_id
             )
             serializer = ExamAnswerSerializer(answer)
             return Response({"success": True, "answer": serializer.data})
         else:
-            # Get all answers
+            # All answers for the session
             answers = ExamAnswer.objects.filter(session=session)
             serializer = ExamAnswerSerializer(answers, many=True)
             return Response(

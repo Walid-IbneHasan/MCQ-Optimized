@@ -28,13 +28,13 @@ class ExamResult(BaseModel):
     questions_attempted = models.PositiveIntegerField()
     correct_answers = models.PositiveIntegerField()
     wrong_answers = models.PositiveIntegerField()
-    unanswered = models.PositiveIntegerField()
+    unanswered_questions = models.PositiveIntegerField()  # Fixed field name
 
     # Scoring
     total_marks = models.FloatField()
     marks_obtained = models.FloatField()
     negative_marks = models.FloatField(default=0.0)
-    percentage_score = models.FloatField()
+    percentage_score = models.FloatField()  # Fixed field name
 
     # Result Status
     is_passed = models.BooleanField()
@@ -42,7 +42,8 @@ class ExamResult(BaseModel):
     rank = models.PositiveIntegerField(null=True, blank=True)
 
     # Performance Metrics
-    time_taken_minutes = models.PositiveIntegerField()
+    time_taken_minutes = models.PositiveIntegerField()  # Fixed field name
+    time_taken_seconds = models.PositiveIntegerField(default=0)  # Added this field
     average_time_per_question = models.FloatField()
     accuracy_rate = (
         models.FloatField()

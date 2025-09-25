@@ -561,9 +561,7 @@ class LeaderboardEntryAdmin(admin.ModelAdmin):
     def user_display(self, obj):
         """Display user with link."""
         url = reverse("admin:authentication_user_change", args=[obj.user.id])
-        return format_html(
-            '<a href="{}">{}</a>', url, obj.user.full_name or obj.user.phone_number
-        )
+        return format_html('<a href="{}">{}</a>', url, obj.user.get_full_name())
 
     user_display.short_description = "User"
 
@@ -728,7 +726,7 @@ class LeaderboardSubscriptionAdmin(admin.ModelAdmin):
 
     def user_display(self, obj):
         """Display user info."""
-        return f"{obj.user.full_name or obj.user.phone_number}"
+        return f"{obj.user.get_full_name()}"
 
     user_display.short_description = "User"
 

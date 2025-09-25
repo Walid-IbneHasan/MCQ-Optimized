@@ -1,3 +1,4 @@
+import json
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import Question, QuestionOption, QuestionTag, QuestionTagging
@@ -85,13 +86,14 @@ class QuestionDetailSerializer(QuestionListSerializer):
 
 class QuestionCreateSerializer(serializers.ModelSerializer):
     """
-    Serializer for creating questions.
+    Serializer for creating questions with image support.
     """
 
-    options = QuestionOptionSerializer(many=True)
-    tags = serializers.ListField(
-        child=serializers.CharField(max_length=50), required=False, allow_empty=True
-    )
+    options = serializers.CharField()  # Will be JSON string from FormData
+    tags = serializers.CharField(
+        required=False, allow_blank=True
+    )  # Will be JSON string from FormData
+    question_image = serializers.ImageField(required=False)
 
     class Meta:
         model = Question
@@ -109,29 +111,58 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_options(self, value):
-        """Validate question options."""
-        if len(value) < 2:
+        """Validate and parse question options from JSON string."""
+        try:
+            if isinstance(value, str):
+                options_data = json.loads(value)
+            else:
+                options_data = value
+        except (json.JSONDecodeError, TypeError):
+            raise serializers.ValidationError("Invalid options format.")
+
+        if not isinstance(options_data, list):
+            raise serializers.ValidationError("Options must be a list.")
+
+        if len(options_data) < 2:
             raise serializers.ValidationError("Question must have at least 2 options.")
-        if len(value) > 6:
+        if len(options_data) > 6:
             raise serializers.ValidationError(
                 "Question cannot have more than 6 options."
             )
 
-        correct_options = [opt for opt in value if opt.get("is_correct")]
+        correct_options = [opt for opt in options_data if opt.get("is_correct")]
         if len(correct_options) != 1:
             raise serializers.ValidationError(
                 "Question must have exactly one correct option."
             )
 
         # Validate option orders
-        option_orders = [opt.get("option_order") for opt in value]
+        option_orders = [opt.get("option_order") for opt in options_data]
         if len(set(option_orders)) != len(option_orders):
             raise serializers.ValidationError("Option orders must be unique.")
 
-        return value
+        return options_data
+
+    def validate_tags(self, value):
+        """Validate and parse tags from JSON string."""
+        if not value:
+            return []
+
+        try:
+            if isinstance(value, str):
+                tags_data = json.loads(value)
+            else:
+                tags_data = value
+        except (json.JSONDecodeError, TypeError):
+            raise serializers.ValidationError("Invalid tags format.")
+
+        if not isinstance(tags_data, list):
+            raise serializers.ValidationError("Tags must be a list.")
+
+        return tags_data
 
     def create(self, validated_data):
-        """Create question with options and tags."""
+        """Create question with options, tags, and image."""
         options_data = validated_data.pop("options")
         tags_data = validated_data.pop("tags", [])
 
@@ -147,13 +178,15 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
 
         # Handle tags
         for tag_name in tags_data:
-            tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
-            QuestionTagging.objects.create(question=question, tag=tag)
+            tag_name = tag_name.strip()
+            if tag_name:
+                tag, created = QuestionTag.objects.get_or_create(name=tag_name)
+                QuestionTagging.objects.create(question=question, tag=tag)
 
         return question
 
     def update(self, instance, validated_data):
-        """Update question with options and tags."""
+        """Update question with options, tags, and image."""
         options_data = validated_data.pop("options", None)
         tags_data = validated_data.pop("tags", None)
 
@@ -178,8 +211,10 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
 
             # Add new tags
             for tag_name in tags_data:
-                tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
-                QuestionTagging.objects.create(question=instance, tag=tag)
+                tag_name = tag_name.strip()
+                if tag_name:
+                    tag, created = QuestionTag.objects.get_or_create(name=tag_name)
+                    QuestionTagging.objects.create(question=instance, tag=tag)
 
         return instance
 
@@ -190,9 +225,7 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
     """
 
     chapter = serializers.UUIDField()
-    questions = serializers.ListField(
-        child=serializers.DictField()
-    )  # Changed this line
+    questions = serializers.ListField(child=serializers.DictField())
 
     def validate_chapter(self, value):
         """Validate chapter exists."""
@@ -208,13 +241,18 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("At least one question is required.")
 
-        # Add chapter to each question for validation
         chapter_id = self.initial_data.get("chapter")
         validated_questions = []
 
         for question_data in value:
             # Add chapter ID to each question
             question_data["chapter"] = chapter_id
+
+            # Convert options and tags to JSON strings for validation
+            if "options" in question_data:
+                question_data["options"] = json.dumps(question_data["options"])
+            if "tags" in question_data:
+                question_data["tags"] = json.dumps(question_data["tags"])
 
             # Validate using QuestionCreateSerializer
             serializer = QuestionCreateSerializer(data=question_data)
@@ -251,8 +289,10 @@ class QuestionBulkCreateSerializer(serializers.Serializer):
 
             # Handle tags
             for tag_name in tags_data:
-                tag, created = QuestionTag.objects.get_or_create(name=tag_name.strip())
-                QuestionTagging.objects.create(question=question, tag=tag)
+                tag_name = tag_name.strip()
+                if tag_name:
+                    tag, created = QuestionTag.objects.get_or_create(name=tag_name)
+                    QuestionTagging.objects.create(question=question, tag=tag)
 
             created_questions.append(question)
 

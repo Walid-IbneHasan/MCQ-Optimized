@@ -1,3 +1,4 @@
+# apps/questions/admin.py (UPDATED WITH IMAGE PREVIEWS)
 from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Count, Avg
@@ -9,8 +10,26 @@ from .models import Question, QuestionOption, QuestionTag, QuestionTagging
 class QuestionOptionInline(admin.TabularInline):
     model = QuestionOption
     extra = 4  # Default 4 options for MCQ
-    fields = ["option_order", "option_text", "option_image", "is_correct"]
+    fields = [
+        "option_order",
+        "option_text",
+        "option_image_preview",
+        "option_image",
+        "is_correct",
+    ]
+    readonly_fields = ["option_image_preview"]
     ordering = ["option_order"]
+
+    def option_image_preview(self, obj):
+        """Show preview of option image"""
+        if obj.option_image:
+            return format_html(
+                '<img src="{}" style="max-width: 100px; max-height: 100px; object-fit: contain;" />',
+                obj.option_image.url,
+            )
+        return "No image"
+
+    option_image_preview.short_description = "Image Preview"
 
     def get_extra(self, request, obj=None, **kwargs):
         """Adjust extra options based on existing options"""
@@ -30,6 +49,7 @@ class QuestionTaggingInline(admin.TabularInline):
 class QuestionAdmin(admin.ModelAdmin):
     list_display = [
         "question_preview",
+        "question_image_preview",  # Added image preview
         "chapter",
         "difficulty_badge",
         "marks",
@@ -65,6 +85,7 @@ class QuestionAdmin(admin.ModelAdmin):
         "total_attempts",
         "success_rate",
         "options_count",
+        "question_image_preview",  # Added image preview
     ]
     raw_id_fields = ["chapter", "created_by"]
     inlines = [QuestionOptionInline, QuestionTaggingInline]
@@ -74,7 +95,14 @@ class QuestionAdmin(admin.ModelAdmin):
         ("Question Information", {"fields": ("chapter", "created_by", "is_active")}),
         (
             "Question Content",
-            {"fields": ("question_text", "question_image", "explanation")},
+            {
+                "fields": (
+                    "question_text",
+                    "question_image",
+                    "question_image_preview",
+                    "explanation",
+                )
+            },
         ),
         (
             "Question Settings",
@@ -106,8 +134,6 @@ class QuestionAdmin(admin.ModelAdmin):
         ),
     )
 
-    # Note: tags uses through model, so we use inline instead of filter_horizontal
-
     def get_queryset(self, request):
         """Optimize queryset with prefetch_related"""
         return (
@@ -133,6 +159,17 @@ class QuestionAdmin(admin.ModelAdmin):
         )
 
     question_preview.short_description = "Question Preview"
+
+    def question_image_preview(self, obj):
+        """Show preview of question image in list and detail"""
+        if obj.question_image:
+            return format_html(
+                '<img src="{}" style="max-width: 150px; max-height: 150px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px;" />',
+                obj.question_image.url,
+            )
+        return "No image"
+
+    question_image_preview.short_description = "Image Preview"
 
     def difficulty_badge(self, obj):
         colors = {
@@ -250,6 +287,7 @@ class QuestionOptionAdmin(admin.ModelAdmin):
         "question_preview",
         "option_order",
         "option_preview",
+        "option_image_preview",  # Added image preview
         "is_correct_badge",
         "has_image",
         "created_at",
@@ -265,7 +303,7 @@ class QuestionOptionAdmin(admin.ModelAdmin):
         "question__question_text",
         "question__chapter__name",
     ]
-    readonly_fields = ["created_at", "updated_at"]
+    readonly_fields = ["created_at", "updated_at", "option_image_preview"]
     raw_id_fields = ["question"]
     ordering = ["question", "option_order"]
 
@@ -299,6 +337,17 @@ class QuestionOptionAdmin(admin.ModelAdmin):
         )
 
     option_preview.short_description = "Option Text"
+
+    def option_image_preview(self, obj):
+        """Show preview of option image"""
+        if obj.option_image:
+            return format_html(
+                '<img src="{}" style="max-width: 100px; max-height: 100px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px;" />',
+                obj.option_image.url,
+            )
+        return "No image"
+
+    option_image_preview.short_description = "Image Preview"
 
     def is_correct_badge(self, obj):
         if obj.is_correct:

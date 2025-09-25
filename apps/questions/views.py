@@ -1,6 +1,7 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Q, Avg, Count
 from django.shortcuts import get_object_or_404
 from .models import Question, QuestionOption, QuestionTag
@@ -24,6 +25,7 @@ class QuestionViewSet(BaseViewSet):
     ViewSet for questions.
     """
 
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     search_fields = ["question_text", "chapter__name", "chapter__subject__name"]
 
     def get_queryset(self):

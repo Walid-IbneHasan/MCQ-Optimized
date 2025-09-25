@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 def calculate_session_score(session_id):
     """
     Calculate score for an exam session and create ExamResult.
-    This is the main function that should run after exam submission.
+    NOW PROPERLY TRIGGERS LEADERBOARD UPDATES.
     """
     try:
         session = ExamSession.objects.select_related("exam", "user").get(id=session_id)
+        logger.info(f"Calculating score for session {session_id}, user: {session.user.phone_number}")
 
         # Get all answers for this session
         answers = ExamAnswer.objects.filter(session=session).select_related(
@@ -108,8 +109,6 @@ def calculate_session_score(session_id):
                 return "F"
 
         # Create or update ExamResult record
-        from apps.results.models import ExamResult
-
         result, created = ExamResult.objects.update_or_create(
             session=session,
             defaults={
@@ -141,7 +140,7 @@ def calculate_session_score(session_id):
             },
         )
 
-        # Calculate subject and chapter wise performance
+        # Calculate detailed performance data
         subject_scores = {}
         chapter_scores = {}
         difficulty_scores = {"easy": 0, "medium": 0, "hard": 0}
@@ -187,7 +186,7 @@ def calculate_session_score(session_id):
             if answer.is_correct:
                 difficulty_scores[difficulty] += 1
 
-        # Calculate percentages for subjects and chapters
+        # Calculate percentages
         for subject_name in subject_scores:
             if subject_scores[subject_name]["total_marks"] > 0:
                 subject_scores[subject_name]["percentage"] = (
@@ -226,14 +225,6 @@ def calculate_session_score(session_id):
         result.weak_areas = weak_areas
         result.strong_areas = strong_areas
 
-        # Generate suggestions
-        suggested_retakes = []
-        for chapter, stats in chapter_scores.items():
-            if stats["percentage"] < 40:
-                suggested_retakes.append(chapter)
-
-        result.suggested_retakes = suggested_retakes[:3]  # Limit to top 3
-
         # Calculate rank among all participants
         better_results = ExamResult.objects.filter(
             exam=session.exam, percentage_score__gt=percentage_score
@@ -242,63 +233,68 @@ def calculate_session_score(session_id):
 
         # Save the complete result
         result.save()
-        
-        # CRITICAL: Trigger leaderboard updates here
-        logger.info(f"Triggering leaderboard updates for user {session.user.id}, exam {session.exam.id}")
-        
-        # Import here to avoid circular imports
-        from apps.leaderboards.tasks import (
-            update_user_leaderboard_entries,
-            update_exam_specific_leaderboards,
-        )
-
-        # Update leaderboards asynchronously
-        update_user_leaderboard_entries.delay(session.user.id)
-        update_exam_specific_leaderboards.delay(session.exam.id)
-
-
-        # IMPORTANT: Trigger analytics calculation
-        logger.info(f"Triggering analytics calculation for session {session_id}")
-
-        # Import here to avoid circular imports
-        from apps.results.tasks import (
-            calculate_exam_analytics,
-            calculate_user_analytics,
-            update_subject_performances,
-        )
-
-        # Trigger analytics calculations (use delay for async processing)
-        calculate_exam_analytics.delay(session.exam.id)
-        calculate_user_analytics.delay(session.user.id)
-        update_subject_performances.delay(session.user.id)
-
-        # Update question statistics for each answered question
-        for answer in answers:
-            update_question_statistics.delay(answer.question.id, answer.is_correct)
-
-        # Update exam statistics
-        update_exam_statistics.delay(session.exam.id)
-
-        # Send notification to user
-        send_notification.delay(
-            user_id=session.user.id,
-            notification_type="exam_completed",
-            context={
-                "exam_title": session.exam.title,
-                "score": percentage_score,
-                "passed": is_passed,
-                "result_id": str(result.id),
-            },
-        )
-
-        # Clear any cached data
-        cache_key = f"session:{session_id}:answers"
-        redis_client.delete(cache_key)
 
         logger.info(
-            f"Score calculated and result created for session {session_id}: "
-            f"{percentage_score:.2f}% (Result ID: {result.id}). Analytics tasks queued."
-            f"{percentage_score:.2f}% (Result ID: {result.id}). Leaderboard updates queued."
+            f"ExamResult created/updated for session {session_id}: {percentage_score:.2f}% "
+            f"(Result ID: {result.id})"
+        )
+
+        # CRITICAL: Trigger leaderboard updates SYNCHRONOUSLY first for immediate results
+        try:
+            logger.info(f"Triggering IMMEDIATE leaderboard updates for user {session.user.id}, exam {session.exam.id}")
+            
+            # Import the leaderboard tasks
+            from apps.leaderboards.tasks import (
+                update_user_leaderboard_entries,
+                update_exam_specific_leaderboards,
+            )
+
+            # Call tasks SYNCHRONOUSLY for immediate results
+            update_user_leaderboard_entries(session.user.id)
+            update_exam_specific_leaderboards(session.exam.id)
+            
+            logger.info(f"IMMEDIATE leaderboard updates completed for session {session_id}")
+
+            # Also trigger async updates for broader leaderboard maintenance
+            update_user_leaderboard_entries.delay(session.user.id)
+            update_exam_specific_leaderboards.delay(session.exam.id)
+
+        except Exception as e:
+            logger.error(f"Error in leaderboard updates for session {session_id}: {str(e)}")
+            # Don't fail the entire task if leaderboard update fails
+
+        # Trigger other analytics
+        try:
+            from apps.results.tasks import (
+                calculate_exam_analytics,
+                calculate_user_analytics,
+            )
+            
+            # These can be async
+            calculate_exam_analytics.delay(session.exam.id)
+            calculate_user_analytics.delay(session.user.id)
+        except Exception as e:
+            logger.error(f"Error triggering analytics for session {session_id}: {str(e)}")
+
+        # Send notification
+        try:
+            from apps.notifications.tasks import send_notification
+            send_notification.delay(
+                user_id=session.user.id,
+                notification_type="exam_completed",
+                context={
+                    "exam_title": session.exam.title,
+                    "score": percentage_score,
+                    "passed": is_passed,
+                    "result_id": str(result.id),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Error sending notification for session {session_id}: {str(e)}")
+
+        logger.info(
+            f"Score calculation completed for session {session_id}: "
+            f"{percentage_score:.2f}% (Result ID: {result.id})"
         )
 
         return {
@@ -461,7 +457,7 @@ def cleanup_abandoned_sessions():
         raise
 
 
-@shared_task
+@shared_task  
 def process_exam_submission(session_id):
     """
     Process exam submission - calculate scores and create results immediately.
@@ -470,12 +466,13 @@ def process_exam_submission(session_id):
     try:
         logger.info(f"Processing exam submission for session {session_id}")
 
-        # Calculate the score and create result
+        # Calculate the score and create result (which will trigger leaderboard updates)
         result = calculate_session_score(session_id)
 
         if result["success"]:
             logger.info(
-                f"Successfully processed exam submission for session {session_id}"
+                f"Successfully processed exam submission for session {session_id} - "
+                f"Score: {result['score']:.2f}%, Passed: {result['passed']}"
             )
             return result
         else:

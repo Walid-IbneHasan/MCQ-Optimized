@@ -213,7 +213,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     Serializer for user profile.
     """
 
-    full_name = serializers.ReadOnlyField()
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -229,9 +229,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "bio",
             "role",
             "is_verified",
+            "is_active",
             "created_at",
         ]
-        read_only_fields = ["id", "phone_number", "role", "is_verified", "created_at"]
+        read_only_fields = ["id", "phone_number", "role", "is_verified", "is_active", "created_at"]
+
+    def get_full_name(self, obj):
+        """Get full name of user."""
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full or obj.email or obj.phone_number
 
 
 class ChangePasswordSerializer(serializers.Serializer):

@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
 from django.db import transaction
-from .models import Exam, ExamSession, ExamAnswer, ExamQuestion
+from .models import Exam, ExamSession, ExamAnswer, ExamQuestion, QuestionSet
 from apps.subjects.serializers import ChapterSerializer
 from apps.questions.serializers import QuestionListSerializer, QuestionOptionSerializer
 from apps.questions.models import Question, QuestionOption
@@ -106,6 +106,13 @@ class ExamCreateSerializer(serializers.ModelSerializer):
         allow_empty=True,
         write_only=True,
     )
+    create_question_set = serializers.BooleanField(default=False, write_only=True)
+    question_set_name = serializers.CharField(
+        required=False, allow_blank=True, write_only=True
+    )
+    use_question_set = serializers.UUIDField(
+        required=False, allow_null=True, write_only=True
+    )
 
     class Meta:
         model = Exam
@@ -137,6 +144,9 @@ class ExamCreateSerializer(serializers.ModelSerializer):
             "randomize_options",
             "auto_submit_on_time_up",
             "grace_period_seconds",
+            "create_question_set",
+            "question_set_name",
+            "use_question_set",
         ]
 
     def validate(self, attrs):
@@ -162,6 +172,17 @@ class ExamCreateSerializer(serializers.ModelSerializer):
                     f"For mixed selection, random questions ({rand}) + "
                     f"manual questions ({manual_count}) must equal total questions ({total})."
                 )
+        
+        use_question_set = attrs.get("use_question_set")
+        if use_question_set:
+            try:
+                question_set = QuestionSet.objects.get(id=use_question_set, is_active=True)
+                # Store question set for later use
+                attrs["_question_set_obj"] = question_set
+            except QuestionSet.DoesNotExist:
+                raise serializers.ValidationError({
+                    "use_question_set": "Question set not found or inactive."
+                })
         return attrs
 
     def _summarize_questions(self, ids):
@@ -189,7 +210,10 @@ class ExamCreateSerializer(serializers.ModelSerializer):
         chapters_data = validated_data.pop("chapters")
         selected_questions = validated_data.pop("selected_questions", []) or []
         new_questions_data = validated_data.pop("new_questions", []) or []
-
+        create_question_set = validated_data.pop("create_question_set", False)
+        question_set_name = validated_data.pop("question_set_name", "")
+        use_question_set_id = validated_data.pop("use_question_set", None)
+        question_set_obj = validated_data.pop("_question_set_obj", None)
         validated_data["created_by"] = self.context["request"].user
 
         with transaction.atomic():
@@ -231,6 +255,28 @@ class ExamCreateSerializer(serializers.ModelSerializer):
                     "difficulty_distribution",
                 ]
             )
+            
+            if question_set_obj:
+                question_set_obj.increment_usage()
+            
+            # NEW: If creating a question set
+            if create_question_set and all_selected:
+                try:
+                    question_set = QuestionSet.objects.create(
+                        name=question_set_name or f"Question Set from {exam.title}",
+                        description=f"Created from exam: {exam.title}",
+                        created_by=exam.created_by,
+                        questions=all_selected,
+                        total_questions=len(all_selected),
+                        difficulty_distribution=diff,
+                    )
+                    question_set.chapters.set(exam.chapters.all())
+                    
+                    logger.info(
+                        f"Question set created: {question_set.id} from exam {exam.id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create question set: {str(e)}")
 
             logger.info(f"Exam created by {exam.created_by.phone_number}: {exam.id}")
             return exam

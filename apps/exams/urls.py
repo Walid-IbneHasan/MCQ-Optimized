@@ -14,6 +14,7 @@ from .analytics_views import (
     UserExamDetailView,
     ExamComparisonView,
 )
+from .question_set_views import QuestionSetViewSet
 
 app_name = "exams"
 
@@ -21,6 +22,7 @@ app_name = "exams"
 router = DefaultRouter()
 router.register(r"exams", ExamViewSet, basename="exam")
 router.register(r"sessions", ExamSessionViewSet, basename="session")
+router.register(r"question-sets", QuestionSetViewSet, basename="question-set")
 
 # Additional URL patterns
 urlpatterns = [

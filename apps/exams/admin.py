@@ -5,7 +5,8 @@ from django.utils import timezone
 from django.db.models import Count, Avg, Q
 from apps.subjects.models import Chapter
 from apps.questions.models import Question
-from .models import Exam, ExamSession, ExamAnswer, ExamQuestion
+from .models import Exam, ExamSession, ExamAnswer, ExamQuestion, QuestionSet
+from django.db import models
 
 
 class ChapterInline(admin.TabularInline):
@@ -231,7 +232,9 @@ class ExamAdmin(admin.ModelAdmin):
 
     def average_score_display(self, obj):
         try:
-            score_val = float(obj.average_score) if obj.average_score is not None else 0.0
+            score_val = (
+                float(obj.average_score) if obj.average_score is not None else 0.0
+            )
         except (TypeError, ValueError):
             score_val = 0.0
 
@@ -242,7 +245,6 @@ class ExamAdmin(admin.ModelAdmin):
 
     average_score_display.short_description = "Avg Score"
     average_score_display.admin_order_field = "average_score"
-
 
     def exam_status_display(self, obj):
         if obj.exam_type == "scheduled":
@@ -683,3 +685,297 @@ class ExamQuestionAdmin(admin.ModelAdmin):
         return obj.question.question_text[:50]
 
     question_display.short_description = "Question"
+
+
+class ChapterInlineForQuestionSet(admin.TabularInline):
+    """Inline to attach chapters to a QuestionSet."""
+
+    model = QuestionSet.chapters.through
+    extra = 1
+    verbose_name = "Chapter"
+    verbose_name_plural = "Chapters"
+
+
+@admin.register(QuestionSet)
+class QuestionSetAdmin(admin.ModelAdmin):
+    """Admin for reusable Question Sets."""
+
+    list_display = [
+        "name_display",
+        "questions_count",
+        "chapters_count",
+        "difficulty_distribution_pretty",
+        "usage_badge",
+        "last_used_at",
+        "is_active_badge",
+        "created_by",
+        "created_at",
+    ]
+
+    list_filter = [
+        "is_active",
+        "created_at",
+        "created_by__role",
+        "chapters",
+    ]
+
+    search_fields = [
+        "name",
+        "description",
+        "created_by__phone_number",
+        "created_by__first_name",
+        "created_by__last_name",
+    ]
+
+    readonly_fields = [
+        "id",
+        "total_questions",
+        "questions_display",
+        "difficulty_distribution_pretty",
+        "usage_summary",
+        "created_at",
+        "updated_at",
+    ]
+
+    fieldsets = (
+        (
+            "Basic Information",
+            {"fields": ("id", "name", "description", "created_by", "is_active")},
+        ),
+        (
+            "Questions",
+            {
+                "fields": (
+                    "questions_display",
+                    "total_questions",
+                )
+            },
+        ),
+        (
+            "Chapters",
+            {
+                "fields": ("chapters",),
+            },
+        ),
+        (
+            "Settings",
+            {"fields": ("difficulty_distribution_pretty",)},
+        ),
+        (
+            "Usage",
+            {
+                "fields": (
+                    "usage_summary",
+                    "last_used_at",
+                )
+            },
+        ),
+        (
+            "Timestamps",
+            {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
+        ),
+    )
+
+    filter_horizontal = ("chapters",)
+    inlines = [ChapterInlineForQuestionSet]
+    date_hierarchy = "created_at"
+
+    actions = [
+        "activate_sets",
+        "deactivate_sets",
+        "recalculate_totals",
+        "bump_usage",
+        "export_to_csv",
+    ]
+
+    # ===== Pretty / helper displays =====
+
+    def name_display(self, obj):
+        """Show name or fallback."""
+        label = obj.name or f"Question Set {obj.id}"
+        return format_html("<strong>{}</strong>", label)
+
+    name_display.short_description = "Name"
+
+    def questions_count(self, obj):
+        """Count from JSON field safely."""
+        try:
+            return len(obj.questions or [])
+        except Exception:
+            return 0
+
+    questions_count.short_description = "Questions"
+    questions_count.admin_order_field = "total_questions"
+
+    def chapters_count(self, obj):
+        return obj.chapters.count()
+
+    chapters_count.short_description = "Chapters"
+
+    def questions_display(self, obj):
+        """
+        Clickable list (first 20) of questions referenced by IDs in the JSON field.
+        Preserves original order.
+        """
+        ids = obj.questions or []
+        if not ids:
+            return format_html('<span style="color:#888;">— none —</span>')
+
+        # Fetch existing questions in a single query
+        qs = Question.objects.filter(id__in=ids)
+        qmap = {str(q.id): q for q in qs}
+
+        items = []
+        for qid in ids[:20]:
+            q = qmap.get(str(qid))
+            if not q:
+                # dangling reference
+                items.append(
+                    f'<li><span style="color:#999;">Missing #{qid}</span></li>'
+                )
+                continue
+            url = reverse("admin:questions_question_change", args=[q.id])
+            items.append(f'<li><a href="{url}">{q.question_text[:90]}</a></li>')
+        if len(ids) > 20:
+            items.append(f"<li>... and {len(ids) - 20} more</li>")
+
+        return format_html('<ul style="margin-left:1rem;">{}</ul>', "".join(items))
+
+    questions_display.short_description = "Selected Questions"
+
+    def difficulty_distribution_pretty(self, obj):
+        diff = obj.difficulty_distribution or {}
+        pretty = (
+            f'{{ easy: {diff.get("easy", 0)}%, '
+            f'medium: {diff.get("medium", 0)}%, '
+            f'hard: {diff.get("hard", 0)}% }}'
+        )
+        return format_html("<code>{}</code>", pretty)
+
+    difficulty_distribution_pretty.short_description = "Difficulty distribution"
+
+    def usage_badge(self, obj):
+        count = getattr(obj, "usage_count", 0) or 0
+        color = "green" if count >= 50 else ("orange" if count >= 10 else "gray")
+        return format_html(
+            '<span style="background-color:{};color:white;padding:2px 8px;border-radius:12px;">{} uses</span>',
+            color,
+            count,
+        )
+
+    usage_badge.short_description = "Usage"
+
+    def usage_summary(self, obj):
+        count = getattr(obj, "usage_count", 0) or 0
+        last = obj.last_used_at.strftime("%Y-%m-%d %H:%M") if obj.last_used_at else "—"
+        return format_html("Count: <b>{}</b><br>Last used: {}", count, last)
+
+    usage_summary.short_description = "Usage Summary"
+
+    def is_active_badge(self, obj):
+        return format_html(
+            '<span style="color:{};">{}</span>',
+            "green" if obj.is_active else "red",
+            "✓ Active" if obj.is_active else "✗ Inactive",
+        )
+
+    is_active_badge.short_description = "Status"
+    is_active_badge.admin_order_field = "is_active"
+
+    # ===== Actions =====
+
+    def activate_sets(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"{updated} question set(s) activated.")
+
+    activate_sets.short_description = "Activate selected sets"
+
+    def deactivate_sets(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"{updated} question set(s) deactivated.")
+
+    deactivate_sets.short_description = "Deactivate selected sets"
+
+    def recalculate_totals(self, request, queryset):
+        """Recompute total_questions from the JSON list length."""
+        updated = 0
+        for qs in queryset:
+            try:
+                length = len(qs.questions or [])
+            except Exception:
+                length = 0
+            if qs.total_questions != length:
+                qs.total_questions = length
+                qs.save(update_fields=["total_questions"])
+                updated += 1
+        self.message_user(request, f"Recalculated totals for {updated} set(s).")
+
+    recalculate_totals.short_description = "Recalculate totals (questions)"
+
+    def bump_usage(self, request, queryset):
+        """Increment usage once and stamp last_used_at = now (handy for testing/ops)."""
+        now = timezone.now()
+        updated = queryset.update(
+            usage_count=models.F("usage_count") + 1, last_used_at=now
+        )
+        self.message_user(request, f"Bumped usage for {updated} set(s).")
+
+    bump_usage.short_description = "Increment usage"
+
+    def export_to_csv(self, request, queryset):
+        """Export selected sets to CSV."""
+        import csv
+        from django.http import HttpResponse
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="question_sets.csv"'
+        writer = csv.writer(response)
+        writer.writerow(
+            [
+                "ID",
+                "Name",
+                "Questions",
+                "Chapters",
+                "Easy%",
+                "Med%",
+                "Hard%",
+                "Usage",
+                "Last Used",
+                "Active",
+                "Created By",
+                "Created At",
+            ]
+        )
+
+        for qs in queryset:
+            diff = qs.difficulty_distribution or {}
+            writer.writerow(
+                [
+                    qs.id,
+                    qs.name or f"Question Set {qs.id}",
+                    len(qs.questions or []),
+                    qs.chapters.count(),
+                    diff.get("easy", 0),
+                    diff.get("medium", 0),
+                    diff.get("hard", 0),
+                    qs.usage_count,
+                    (
+                        qs.last_used_at.strftime("%Y-%m-%d %H:%M")
+                        if qs.last_used_at
+                        else ""
+                    ),
+                    "Yes" if qs.is_active else "No",
+                    getattr(qs.created_by, "phone_number", "") or str(qs.created_by_id),
+                    qs.created_at.strftime("%Y-%m-%d %H:%M") if qs.created_at else "",
+                ]
+            )
+        return response
+
+    export_to_csv.short_description = "Export to CSV"
+
+    # ===== Queryset tweaks =====
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        # Prefetch chapters for faster counts & filters
+        return qs.prefetch_related("chapters", "created_by")

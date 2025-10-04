@@ -11,6 +11,8 @@ from .views import (
     PasswordResetConfirmView,
     LogoutView,
     UserPermissionsView,
+    UserManagementView,
+    UserDetailManagementView,
 )
 
 urlpatterns = [
@@ -30,6 +32,11 @@ urlpatterns = [
         PasswordResetConfirmView.as_view(),
         name="password-reset-confirm",
     ),
+    
     # Permissions
     path("permissions/", UserPermissionsView.as_view(), name="user-permissions"),
+    
+    # User Management (Admin only)
+    path('users/', UserManagementView.as_view(), name='user-management'),
+    path('users/<uuid:user_id>/', UserDetailManagementView.as_view(), name='user-detail-management'),
 ]

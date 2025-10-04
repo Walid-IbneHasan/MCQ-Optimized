@@ -82,3 +82,16 @@ class CanManageQuestions(permissions.BasePermission):
             request.user.is_superuser
             or request.user.role in ["admin", "moderator", "teacher"]
         )
+
+
+class IsAdmin(permissions.BasePermission):
+    """
+    Permission class for admin users only.
+    """
+
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == "admin"
+        )

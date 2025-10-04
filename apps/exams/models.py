@@ -388,3 +388,50 @@ class ExamQuestion(BaseModel):
 
     def __str__(self):
         return f"Session {self.session.id} - Q{self.question_number}"
+
+
+class QuestionSet(BaseModel):
+    """
+    Reusable question sets for exams.
+    """
+    name = models.CharField(max_length=200, blank=True)
+    description = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="created_question_sets"
+    )
+    
+    # Store question references
+    questions = models.JSONField(default=list)  # List of question IDs
+    
+    # Metadata
+    total_questions = models.PositiveIntegerField(default=0)
+    chapters = models.ManyToManyField(Chapter, related_name="question_sets")
+    
+    # Usage tracking
+    usage_count = models.PositiveIntegerField(default=0)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    
+    # Settings from original exam
+    difficulty_distribution = models.JSONField(default=dict, blank=True)
+    
+    is_active = models.BooleanField(default=True)
+    
+    objects = SoftDeleteManager()
+    
+    class Meta:
+        db_table = "question_sets"
+        ordering = ["-usage_count", "-created_at"]
+        indexes = [
+            models.Index(fields=["created_by", "is_active"]),
+            models.Index(fields=["usage_count"]),
+            models.Index(fields=["-created_at"]),
+        ]
+    
+    def __str__(self):
+        return self.name or f"Question Set {self.id}"
+    
+    def increment_usage(self):
+        """Increment usage count."""
+        self.usage_count = models.F("usage_count") + 1
+        self.last_used_at = timezone.now()
+        self.save(update_fields=["usage_count", "last_used_at"])

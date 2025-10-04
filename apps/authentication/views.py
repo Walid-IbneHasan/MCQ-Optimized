@@ -6,9 +6,11 @@ from rest_framework.generics import RetrieveUpdateAPIView
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.pagination import PageNumberPagination
 from django_ratelimit.decorators import ratelimit
 from django.utils.decorators import method_decorator
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from .serializers import (
@@ -31,6 +33,7 @@ from .utils import (
     check_rate_limit,
     clear_rate_limit,
 )
+from utils.permissions import IsAdmin
 from drf_spectacular.utils import (
     extend_schema,
     extend_schema_view,
@@ -490,3 +493,210 @@ class UserPermissionsView(APIView):
         return Response(
             {"success": True, "permissions": serializer.data}, status=status.HTTP_200_OK
         )
+
+
+class UserManagementView(APIView):
+    """
+    User management endpoints for admins.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        """List all users with pagination and filters."""
+        logger.info(f"User list requested by admin: {request.user.phone_number}")
+
+        # Get query parameters
+        search = request.query_params.get("search", "")
+        role = request.query_params.get("role", "")
+        is_active = request.query_params.get("is_active", "")
+
+        # Base queryset
+        queryset = User.objects.all().order_by("-created_at")
+
+        # Apply filters
+        if search:
+            queryset = queryset.filter(
+                Q(phone_number__icontains=search)
+                | Q(email__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+            )
+
+        if role:
+            queryset = queryset.filter(role=role)
+
+        if is_active:
+            queryset = queryset.filter(is_active=is_active.lower() == "true")
+
+        # Pagination
+        paginator = PageNumberPagination()
+        paginator.page_size = 20
+        page = paginator.paginate_queryset(queryset, request)
+
+        if page is not None:
+            serializer = UserProfileSerializer(page, many=True)
+            return paginator.get_paginated_response(
+                {"success": True, "users": serializer.data}
+            )
+
+        serializer = UserProfileSerializer(queryset, many=True)
+        return Response(
+            {"success": True, "users": serializer.data, "count": queryset.count()}
+        )
+
+    def post(self, request):
+        """Create a new user."""
+        logger.info(f"Creating new user by admin: {request.user.phone_number}")
+
+        phone_number = request.data.get("phone_number")
+        password = request.data.get("password")
+        email = request.data.get("email", "")
+        first_name = request.data.get("first_name", "")
+        last_name = request.data.get("last_name", "")
+        role = request.data.get("role", "student")
+
+        if not phone_number or not password:
+            return Response(
+                {"success": False, "error": "Phone number and password are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if User.objects.filter(phone_number=phone_number).exists():
+            return Response(
+                {
+                    "success": False,
+                    "error": "User with this phone number already exists",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.create_user(
+                phone_number=phone_number,
+                password=password,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                role=role,
+                is_active=True,
+                is_verified=True,
+            )
+
+            logger.info(f"User created successfully: {user.phone_number}")
+
+            serializer = UserProfileSerializer(user)
+            return Response(
+                {
+                    "success": True,
+                    "message": "User created successfully",
+                    "user": serializer.data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        except Exception as e:
+            logger.error(f"Error creating user: {str(e)}")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class UserDetailManagementView(APIView):
+    """
+    Individual user management for admins.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request, user_id):
+        """Get user details."""
+        try:
+            user = User.objects.get(id=user_id)
+            serializer = UserProfileSerializer(user)
+            return Response({"success": True, "user": serializer.data})
+        except User.DoesNotExist:
+            return Response(
+                {"success": False, "error": "User not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    def patch(self, request, user_id):
+        """Update user details."""
+        logger.info(f"Updating user {user_id} by admin: {request.user.phone_number}")
+
+        try:
+            user = User.objects.get(id=user_id)
+
+            # Prevent admin from modifying their own role
+            if str(user.id) == str(request.user.id) and "role" in request.data:
+                if request.data["role"] != user.role:
+                    return Response(
+                        {"success": False, "error": "You cannot change your own role"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            # Update allowed fields
+            allowed_fields = ["email", "first_name", "last_name", "role", "is_active"]
+            for field in allowed_fields:
+                if field in request.data:
+                    setattr(user, field, request.data[field])
+
+            user.save()
+
+            logger.info(f"User updated successfully: {user.phone_number}")
+
+            serializer = UserProfileSerializer(user)
+            return Response(
+                {
+                    "success": True,
+                    "message": "User updated successfully",
+                    "user": serializer.data,
+                }
+            )
+
+        except User.DoesNotExist:
+            return Response(
+                {"success": False, "error": "User not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            logger.error(f"Error updating user: {str(e)}")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def delete(self, request, user_id):
+        """Delete user."""
+        logger.info(f"Deleting user {user_id} by admin: {request.user.phone_number}")
+
+        try:
+            user = User.objects.get(id=user_id)
+
+            # Prevent admin from deleting themselves
+            if str(user.id) == str(request.user.id):
+                return Response(
+                    {"success": False, "error": "You cannot delete yourself"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            phone_number = user.phone_number
+            user.delete()
+
+            logger.info(f"User deleted successfully: {phone_number}")
+
+            return Response({"success": True, "message": "User deleted successfully"})
+
+        except User.DoesNotExist:
+            return Response(
+                {"success": False, "error": "User not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            logger.error(f"Error deleting user: {str(e)}")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

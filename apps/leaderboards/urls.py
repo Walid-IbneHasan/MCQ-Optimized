@@ -26,9 +26,12 @@ router.register(
     r"summary", UserLeaderboardSummaryViewSet, basename="leaderboard-summary"
 )
 
+
+app_name = "leaderboards"
+
+
 urlpatterns = [
-    # Router URLs
-    path("", include(router.urls)),
+    
     # Enhanced API endpoints
     path("exam-leaderboards/", get_exam_leaderboards, name="exam-leaderboards"),
     path(
@@ -38,4 +41,6 @@ urlpatterns = [
     ),
     path("my-summary/", get_user_leaderboard_summary, name="user-leaderboard-summary"),
     path("available-periods/", get_available_periods, name="available-periods"),
+    # Router URLs
+    path("", include(router.urls)),
 ]

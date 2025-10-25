@@ -24,33 +24,58 @@ def calculate_session_score(session_id):
     """
     try:
         session = ExamSession.objects.select_related("exam", "user").get(id=session_id)
-        logger.info(f"Calculating score for session {session_id}, user: {session.user.phone_number}")
+        logger.info(
+            f"Calculating score for session {session_id}, user: {session.user.phone_number}"
+        )
+
+        # CRITICAL FIX: Get total number of questions in the exam
+        total_questions_in_exam = len(session.session_questions)
 
         # Get all answers for this session
         answers = ExamAnswer.objects.filter(session=session).select_related(
             "question", "selected_option"
         )
 
+        # Create a mapping of answered question IDs
+        answered_question_ids = set(str(answer.question.id) for answer in answers)
+
+        # FIXED: Calculate total marks based on ALL questions in the exam
         total_marks = 0
+        marks_obtained = 0
+        negative_marks = 0
         correct_answers = 0
         wrong_answers = 0
         unanswered = 0
-        marks_obtained = 0
-        negative_marks = 0
 
-        # Calculate scores for each answer
+        # First, get all questions for this session to calculate total possible marks
+        from apps.questions.models import Question
+
+        all_session_questions = Question.objects.filter(
+            id__in=session.session_questions
+        ).select_related("chapter")
+
+        # Calculate total possible marks
+        for question in all_session_questions:
+            total_marks += question.marks
+
+        logger.info(
+            f"Session {session_id}: Total questions: {total_questions_in_exam}, Total marks: {total_marks}"
+        )
+
+        # Process each answer and calculate marks
         for answer in answers:
             question = answer.question
-            total_marks += question.marks
 
             if answer.selected_option:
                 if answer.selected_option.is_correct:
+                    # Correct answer
                     correct_answers += 1
                     marks_awarded = question.marks
                     marks_obtained += marks_awarded
                     answer.is_correct = True
                     answer.marks_awarded = marks_awarded
                 else:
+                    # Wrong answer
                     wrong_answers += 1
                     answer.is_correct = False
 
@@ -66,6 +91,7 @@ def calculate_session_score(session_id):
                     else:
                         answer.marks_awarded = 0
             else:
+                # Unanswered (but answer record exists with no selection)
                 unanswered += 1
                 answer.is_correct = False
                 answer.marks_awarded = 0
@@ -73,11 +99,33 @@ def calculate_session_score(session_id):
             # Save the updated answer
             answer.save(update_fields=["is_correct", "marks_awarded"])
 
-        # Calculate percentage
+        # FIXED: Count questions that weren't even attempted (no ExamAnswer record)
+        unattempted_count = total_questions_in_exam - answers.count()
+        unanswered += unattempted_count
+
+        logger.info(
+            f"Session {session_id} breakdown: "
+            f"Correct: {correct_answers}, Wrong: {wrong_answers}, "
+            f"Unanswered with record: {unanswered - unattempted_count}, "
+            f"Completely unattempted: {unattempted_count}, "
+            f"Total unanswered: {unanswered}"
+        )
+
+        # FIXED: Calculate percentage based on total possible marks
+        # Not just answered questions
         percentage_score = (
             (marks_obtained / total_marks * 100) if total_marks > 0 else 0
         )
+
+        # Ensure percentage doesn't go below 0 due to negative marking
+        percentage_score = max(0, percentage_score)
+
         is_passed = percentage_score >= session.exam.passing_percentage
+
+        logger.info(
+            f"Session {session_id} final score: "
+            f"Marks obtained: {marks_obtained}/{total_marks} = {percentage_score:.2f}%"
+        )
 
         # Update session with final scores
         session.total_score = marks_obtained
@@ -108,14 +156,22 @@ def calculate_session_score(session_id):
             else:
                 return "F"
 
+        # FIXED: Calculate accuracy based on ATTEMPTED questions, not total
+        attempted_questions = correct_answers + wrong_answers
+        accuracy_rate = (
+            (correct_answers / attempted_questions * 100)
+            if attempted_questions > 0
+            else 0
+        )
+
         # Create or update ExamResult record
         result, created = ExamResult.objects.update_or_create(
             session=session,
             defaults={
                 "user": session.user,
                 "exam": session.exam,
-                "total_questions": answers.count(),
-                "questions_attempted": correct_answers + wrong_answers,
+                "total_questions": total_questions_in_exam,  # FIXED: Use actual total
+                "questions_attempted": attempted_questions,
                 "correct_answers": correct_answers,
                 "wrong_answers": wrong_answers,
                 "unanswered_questions": unanswered,
@@ -128,15 +184,11 @@ def calculate_session_score(session_id):
                 "time_taken_minutes": session.time_spent_seconds // 60,
                 "time_taken_seconds": session.time_spent_seconds,
                 "average_time_per_question": (
-                    session.time_spent_seconds / answers.count()
-                    if answers.count() > 0
+                    session.time_spent_seconds / total_questions_in_exam
+                    if total_questions_in_exam > 0
                     else 0
                 ),
-                "accuracy_rate": (
-                    (correct_answers / (correct_answers + wrong_answers) * 100)
-                    if (correct_answers + wrong_answers) > 0
-                    else 0
-                ),
+                "accuracy_rate": accuracy_rate,  # Based on attempted only
             },
         )
 
@@ -241,8 +293,10 @@ def calculate_session_score(session_id):
 
         # CRITICAL: Trigger leaderboard updates SYNCHRONOUSLY first for immediate results
         try:
-            logger.info(f"Triggering IMMEDIATE leaderboard updates for user {session.user.id}, exam {session.exam.id}")
-            
+            logger.info(
+                f"Triggering IMMEDIATE leaderboard updates for user {session.user.id}, exam {session.exam.id}"
+            )
+
             # Import the leaderboard tasks
             from apps.leaderboards.tasks import (
                 update_user_leaderboard_entries,
@@ -252,15 +306,19 @@ def calculate_session_score(session_id):
             # Call tasks SYNCHRONOUSLY for immediate results
             update_user_leaderboard_entries(session.user.id)
             update_exam_specific_leaderboards(session.exam.id)
-            
-            logger.info(f"IMMEDIATE leaderboard updates completed for session {session_id}")
+
+            logger.info(
+                f"IMMEDIATE leaderboard updates completed for session {session_id}"
+            )
 
             # Also trigger async updates for broader leaderboard maintenance
             update_user_leaderboard_entries.delay(session.user.id)
             update_exam_specific_leaderboards.delay(session.exam.id)
 
         except Exception as e:
-            logger.error(f"Error in leaderboard updates for session {session_id}: {str(e)}")
+            logger.error(
+                f"Error in leaderboard updates for session {session_id}: {str(e)}"
+            )
             # Don't fail the entire task if leaderboard update fails
 
         # Trigger other analytics
@@ -269,16 +327,19 @@ def calculate_session_score(session_id):
                 calculate_exam_analytics,
                 calculate_user_analytics,
             )
-            
+
             # These can be async
             calculate_exam_analytics.delay(session.exam.id)
             calculate_user_analytics.delay(session.user.id)
         except Exception as e:
-            logger.error(f"Error triggering analytics for session {session_id}: {str(e)}")
+            logger.error(
+                f"Error triggering analytics for session {session_id}: {str(e)}"
+            )
 
         # Send notification
         try:
             from apps.notifications.tasks import send_notification
+
             send_notification.delay(
                 user_id=session.user.id,
                 notification_type="exam_completed",
@@ -290,7 +351,9 @@ def calculate_session_score(session_id):
                 },
             )
         except Exception as e:
-            logger.error(f"Error sending notification for session {session_id}: {str(e)}")
+            logger.error(
+                f"Error sending notification for session {session_id}: {str(e)}"
+            )
 
         logger.info(
             f"Score calculation completed for session {session_id}: "
@@ -457,7 +520,7 @@ def cleanup_abandoned_sessions():
         raise
 
 
-@shared_task  
+@shared_task
 def process_exam_submission(session_id):
     """
     Process exam submission - calculate scores and create results immediately.

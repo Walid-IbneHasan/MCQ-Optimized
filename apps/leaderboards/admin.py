@@ -1,3 +1,4 @@
+# apps/leaderboards/admin.py - Fixed version
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
@@ -200,10 +201,10 @@ class LeaderboardTypeAdmin(admin.ModelAdmin):
 
     def generate_current_period_leaderboards(self, request, queryset):
         """Generate leaderboards for current period."""
-        from .tasks import generate_leaderboards
+        from .tasks import update_leaderboard_type
 
         for lb_type in queryset:
-            generate_leaderboards.delay(lb_type.id)
+            update_leaderboard_type.delay(lb_type.id)
         self.message_user(
             request, f"Leaderboard generation initiated for {queryset.count()} types."
         )
@@ -383,9 +384,12 @@ class LeaderboardAdmin(admin.ModelAdmin):
             preview += "<tr><th>Rank</th><th>User</th><th>Score</th></tr>"
 
             for entry in obj.leaderboard_data[:5]:
-                preview += f'<tr><td>#{entry.get("rank", "-")}</td>'
-                preview += f'<td>{entry.get("user_name", "Unknown")}</td>'
-                preview += f'<td>{entry.get("score", 0):.2f}</td></tr>'
+                rank = entry.get("rank", "-")
+                user_name = entry.get("user_name", "Unknown")
+                score = entry.get("score", 0)
+                preview += f"<tr><td>#{rank}</td>"
+                preview += f"<td>{user_name}</td>"
+                preview += f"<td>{score:.2f}</td></tr>"
 
             preview += "</table>"
             if len(obj.leaderboard_data) > 5:
@@ -400,10 +404,11 @@ class LeaderboardAdmin(admin.ModelAdmin):
 
     def update_leaderboard(self, request, queryset):
         """Update leaderboard data."""
-        from .tasks import update_leaderboard_entries
+        from .tasks import update_leaderboard_type
 
         for leaderboard in queryset:
-            update_leaderboard_entries.delay(leaderboard.id)
+            if leaderboard.leaderboard_type:
+                update_leaderboard_type.delay(leaderboard.leaderboard_type.id)
         self.message_user(
             request, f"Update initiated for {queryset.count()} leaderboards."
         )
@@ -570,40 +575,45 @@ class LeaderboardEntryAdmin(admin.ModelAdmin):
         return format_html(
             "<small>{}<br/>{}</small>",
             obj.leaderboard.leaderboard_type.name,
-            (
-                obj.leaderboard.get_period_display()
-                if hasattr(obj.leaderboard, "get_period_display")
-                else ""
-            ),
+            obj.leaderboard.leaderboard_type.get_period_display(),
         )
 
     leaderboard_info.short_description = "Leaderboard"
 
     def score_display(self, obj):
-        """Display score with color."""
-        if obj.score >= 90:
+        """Display score with color - FIXED."""
+        score_value = float(obj.score)  # Ensure it's a float
+        if score_value >= 90:
             color = "green"
-        elif obj.score >= 70:
+        elif score_value >= 70:
             color = "orange"
         else:
             color = "red"
+
+        # Format the score first, then use it in format_html
+        formatted_score = f"{score_value:.2f}"
         return format_html(
-            '<span style="color: {}; font-weight: bold;">{:.2f}</span>',
+            '<span style="color: {}; font-weight: bold;">{}</span>',
             color,
-            obj.score,
+            formatted_score,
         )
 
     score_display.short_description = "Score"
 
     def performance_metrics(self, obj):
-        """Display key performance metrics."""
+        """Display key performance metrics - FIXED."""
+        # Format values first
+        total_exams = int(obj.total_exams)
+        accuracy = f"{float(obj.accuracy_rate):.1f}"
+        avg_score = f"{float(obj.average_score):.1f}"
+
         return format_html(
             "Exams: <strong>{}</strong><br/>"
-            "Accuracy: <strong>{:.1f}%</strong><br/>"
-            "Avg: <strong>{:.1f}</strong>",
-            obj.total_exams,
-            obj.accuracy_rate,
-            obj.average_score,
+            "Accuracy: <strong>{}%</strong><br/>"
+            "Avg: <strong>{}</strong>",
+            total_exams,
+            accuracy,
+            avg_score,
         )
 
     performance_metrics.short_description = "Metrics"
@@ -635,7 +645,7 @@ class LeaderboardEntryAdmin(admin.ModelAdmin):
     achievements_count.short_description = "Awards"
 
     def rank_change_visualization(self, obj):
-        """Visualize rank change."""
+        """Visualize rank change - FIXED."""
         if obj.previous_rank and obj.rank_change != 0:
             if obj.rank_change > 0:
                 arrow = "↑" * min(abs(obj.rank_change), 5)
@@ -651,8 +661,8 @@ class LeaderboardEntryAdmin(admin.ModelAdmin):
                 "<small>Previous: #{} → Current: #{}<br/>{}</small>",
                 color,
                 arrow,
-                obj.previous_rank,
-                obj.rank,
+                int(obj.previous_rank),
+                int(obj.rank),
                 change_text,
             )
         return "No change"
@@ -660,15 +670,25 @@ class LeaderboardEntryAdmin(admin.ModelAdmin):
     rank_change_visualization.short_description = "Rank Change"
 
     def performance_chart(self, obj):
-        """Simple performance visualization."""
-        bar_length = int(obj.average_score / 10)
+        """Simple performance visualization - FIXED."""
+        avg_score = float(obj.average_score)
+        best_score = float(obj.best_score)
+
+        bar_length = int(avg_score / 10)
         bar = "█" * bar_length + "░" * (10 - bar_length)
+
+        best_bar_length = int(best_score / 10)
+        best_bar = "█" * best_bar_length
+
+        avg_formatted = f"{avg_score:.1f}"
+        best_formatted = f"{best_score:.1f}"
+
         return format_html(
-            "Average: {} {:.1f}%<br/>" "Best: {} {:.1f}%",
+            "Average: {} {}%<br/>" "Best: {} {}%",
             bar,
-            obj.average_score,
-            "█" * int(obj.best_score / 10),
-            obj.best_score,
+            avg_formatted,
+            best_bar,
+            best_formatted,
         )
 
     performance_chart.short_description = "Performance"
